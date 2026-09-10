@@ -32,7 +32,14 @@ export class TikzRenderer {
     const svgFile = join(dir, "main.svg");
 
     if (existsSync(svgFile)) {
-      return readFileSync(svgFile, "utf8");
+      const cached = readFileSync(svgFile, "utf8");
+      // A stale blank SVG (broken dvisvgm output) must not be served: re-render.
+      if (!this.isBlankSvg(cached)) return cached;
+      try {
+        rmSync(svgFile, { force: true });
+      } catch {
+        // ignore
+      }
     }
 
     const existing = this.inFlight.get(hash);
@@ -103,6 +110,15 @@ export class TikzRenderer {
           throw new Error(`dvisvgm did not produce any SVG (engine ${engine.label})`);
         }
         const svg = readFileSync(svgFile, "utf8");
+        if (this.isBlankSvg(svg)) {
+          // dvisvgm (e.g. MiKTeX 3.4.3) can emit every stroke with
+          // stroke-opacity='0' when converting some pgfplots PDFs: the file
+          // looks valid but nothing is visible. Treat it as a failure and let
+          // the next engine (DVI) try instead.
+          throw new Error(
+            `dvisvgm produced an empty SVG (all strokes/fills are transparent) — engine ${engine.label}`
+          );
+        }
         return this.cleanSvg(svg);
       } catch (e) {
         errors.push(e instanceof Error ? e.message : String(e));
@@ -169,6 +185,29 @@ export class TikzRenderer {
       .replace(/^\s*<\?xml[^>]*\?>\s*/, "")
       .replace(/^\s*<!--[\s\S]*?-->\s*/, "")
       .trim();
+  }
+
+  // An SVG is "blank" when every drawing element is invisible (stroke-opacity
+  // or fill-opacity equal to 0, or no visible stroke/fill at all). Used to
+  // detect broken dvisvgm output and fall back to the next engine.
+  private isBlankSvg(svg: string): boolean {
+    const elRe = /<(path|rect|circle|ellipse|line|polyline|polygon|text)\b[^>]*>/gi;
+    let visible = false;
+    let m: RegExpExecArray | null;
+    while ((m = elRe.exec(svg)) !== null) {
+      const tag = m[0];
+      const stroke = /stroke='([^']*)'/.exec(tag)?.[1];
+      const fill = /fill='([^']*)'/.exec(tag)?.[1];
+      const strokeOp = /stroke-opacity='([^']*)'/.exec(tag)?.[1];
+      const fillOp = /fill-opacity='([^']*)'/.exec(tag)?.[1];
+      const strokeVisible = stroke !== undefined && stroke !== "" && stroke !== "none" && strokeOp !== "0";
+      const fillVisible = fill !== undefined && fill !== "" && fill !== "none" && fillOp !== "0";
+      if (strokeVisible || fillVisible) {
+        visible = true;
+        break;
+      }
+    }
+    return !visible;
   }
 
   private buildErrorMessage(errors: string[], dir: string): string {
