@@ -1,12 +1,10 @@
 import { execFile } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { promises as fsp, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type TikzVaultPlugin from "./main";
 import type { TikzSettings } from "./settings";
-
-export type TikzEngine = "auto" | "pdf" | "dvi";
 
 interface EngineBuild {
   label: string;
@@ -17,6 +15,10 @@ export class TikzRenderer {
   private plugin: TikzVaultPlugin;
   private cacheDir: string;
   private inFlight = new Map<string, Promise<string>>();
+  // In-memory copy of already rendered SVGs: avoids re-reading the disk (and
+  // re-rendering) when the editor recomputes decorations on every keystroke.
+  private memo = new Map<string, string>();
+  private binCache = new Map<string, string | null>();
 
   constructor(plugin: TikzVaultPlugin) {
     this.plugin = plugin;
@@ -31,25 +33,48 @@ export class TikzRenderer {
     const dir = join(this.cacheDir, hash);
     const svgFile = join(dir, "main.svg");
 
-    if (existsSync(svgFile)) {
-      const cached = readFileSync(svgFile, "utf8");
-      // A stale blank SVG (broken dvisvgm output) must not be served: re-render.
-      if (!this.isBlankSvg(cached)) return cached;
-      try {
-        rmSync(svgFile, { force: true });
-      } catch {
-        // ignore
-      }
+    const memoized = this.memo.get(hash);
+    if (memoized) return memoized;
+
+    const cached = await this.readCache(svgFile);
+    if (cached !== null) {
+      this.memo.set(hash, cached);
+      return cached;
     }
 
     const existing = this.inFlight.get(hash);
     if (existing) return existing;
 
-    const promise = this.doRender(tex, dir, svgFile, s).finally(() => {
-      this.inFlight.delete(hash);
-    });
+    const promise = this.doRender(tex, dir, svgFile, s)
+      .then((svg) => {
+        this.memo.set(hash, svg);
+        return svg;
+      })
+      .finally(() => {
+        this.inFlight.delete(hash);
+      });
     this.inFlight.set(hash, promise);
     return promise;
+  }
+
+  // Read a cached SVG asynchronously so the UI thread is not blocked. A stale
+  // blank SVG (broken dvisvgm output) is discarded so it gets re-rendered.
+  private async readCache(svgFile: string): Promise<string | null> {
+    let cached: string;
+    try {
+      cached = await fsp.readFile(svgFile, "utf8");
+    } catch {
+      return null;
+    }
+    if (this.isBlankSvg(cached)) {
+      try {
+        await fsp.rm(svgFile, { force: true });
+      } catch {
+        // ignore
+      }
+      return null;
+    }
+    return this.cleanSvg(cached);
   }
 
   private async doRender(
@@ -58,8 +83,8 @@ export class TikzRenderer {
     svgFile: string,
     s: TikzSettings
   ): Promise<string> {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "main.tex"), tex, "utf8");
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(join(dir, "main.tex"), tex, "utf8");
 
     const latexPdf = this.resolveLatex("pdf");
     const latexDvi = this.resolveLatex("dvi");
@@ -70,11 +95,7 @@ export class TikzRenderer {
       engines.push({
         label: "pdflatex + dvisvgm",
         build: async (d) => {
-          await this.run(
-            latexPdf,
-            ["--interaction=nonstopmode", "--halt-on-error", "--disable-write18", "--enable-installer", "main.tex"],
-            d
-          );
+          await this.run(latexPdf, this.latexArgs(), d);
           await this.run(dvisvgm, ["--pdf", "--no-fonts", "--precision=2", "main.pdf"], d);
         },
       });
@@ -83,11 +104,7 @@ export class TikzRenderer {
       engines.push({
         label: "latex + dvisvgm",
         build: async (d) => {
-          await this.run(
-            latexDvi,
-            ["--interaction=nonstopmode", "--halt-on-error", "--disable-write18", "--enable-installer", "main.tex"],
-            d
-          );
+          await this.run(latexDvi, this.latexArgs(), d);
           await this.run(dvisvgm, ["--no-fonts", "--precision=2", "main.dvi"], d);
         },
       });
@@ -106,10 +123,12 @@ export class TikzRenderer {
     for (const engine of engines) {
       try {
         await engine.build(dir);
-        if (!existsSync(svgFile)) {
+        let svg: string;
+        try {
+          svg = await fsp.readFile(svgFile, "utf8");
+        } catch {
           throw new Error(`dvisvgm did not produce any SVG (engine ${engine.label})`);
         }
-        const svg = readFileSync(svgFile, "utf8");
         if (this.isBlankSvg(svg)) {
           // dvisvgm (e.g. MiKTeX 3.4.3) can emit every stroke with
           // stroke-opacity='0' when converting some pgfplots PDFs: the file
@@ -124,7 +143,7 @@ export class TikzRenderer {
         errors.push(e instanceof Error ? e.message : String(e));
         for (const f of ["main.pdf", "main.dvi"]) {
           try {
-            rmSync(join(dir, f), { force: true });
+            await fsp.rm(join(dir, f), { force: true });
           } catch {
             // ignore
           }
@@ -135,7 +154,23 @@ export class TikzRenderer {
     throw new Error(this.buildErrorMessage(errors, dir));
   }
 
-  clearCache(): void {
+  // LaTeX arguments. `--disable-write18` and `--enable-installer` are MiKTeX
+  // specific: TeX Live does not accept them, so they are only added on Windows
+  // (where MiKTeX is the common distribution).
+  private latexArgs(): string[] {
+    const args = ["--interaction=nonstopmode", "--halt-on-error"];
+    if (process.platform === "win32") args.push("--disable-write18", "--enable-installer");
+    args.push("main.tex");
+    return args;
+  }
+
+  // Wait for in-flight renders before deleting the cache, so a build that is
+  // writing into a cache directory cannot fail with a missing-directory error.
+  async clearCache(): Promise<void> {
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight.values()]);
+    }
+    this.memo.clear();
     try {
       rmSync(this.cacheDir, { recursive: true, force: true });
       mkdirSync(this.cacheDir, { recursive: true });
@@ -144,12 +179,88 @@ export class TikzRenderer {
     }
   }
 
+  // Opportunistic cleanup: drop cached renders older than 14 days and, if the
+  // cache exceeds 256 MB, remove the oldest directories first.
+  cleanupCache(): void {
+    const maxAgeMs = 14 * 24 * 3600 * 1000;
+    const maxBytes = 256 * 1024 * 1024;
+    let names: string[];
+    try {
+      names = readdirSync(this.cacheDir);
+    } catch {
+      return;
+    }
+    const now = Date.now();
+    const dirs: { path: string; mtime: number; size: number }[] = [];
+    for (const name of names) {
+      const p = join(this.cacheDir, name);
+      try {
+        const st = statSync(p);
+        if (st.isDirectory()) dirs.push({ path: p, mtime: st.mtimeMs, size: this.dirSize(p) });
+      } catch {
+        // ignore
+      }
+    }
+    let total = 0;
+    for (const d of dirs) {
+      if (now - d.mtime > maxAgeMs) {
+        try {
+          rmSync(d.path, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      } else {
+        total += d.size;
+      }
+    }
+    if (total > maxBytes) {
+      const remaining = dirs
+        .filter((d) => existsSync(d.path))
+        .sort((a, b) => a.mtime - b.mtime);
+      for (const d of remaining) {
+        if (total <= maxBytes) break;
+        try {
+          rmSync(d.path, { recursive: true, force: true });
+          total -= d.size;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  private dirSize(dir: string): number {
+    let total = 0;
+    try {
+      for (const name of readdirSync(dir)) {
+        try {
+          total += statSync(join(dir, name)).size;
+        } catch {
+          // ignore
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return total;
+  }
+
   private buildTexSource(code: string, extraPreamble: string): string {
     const src = code.replace(/\r\n/g, "\n").trim();
     if (!src) throw new Error("The TikZ block is empty.");
 
     if (/\\documentclass\s*\{/.test(src)) {
       return src;
+    }
+
+    // A block that already provides a document environment must not be wrapped
+    // again: only prepend the missing class/packages.
+    if (/\\begin\{document\}/.test(src)) {
+      const head = ["\\documentclass[border=5pt]{standalone}"];
+      if (!/\\usepackage(?:\[[^\]]*\])?\{tikz\}/.test(src)) head.push("\\usepackage{tikz}");
+      const extraDoc = extraPreamble.trim();
+      if (extraDoc) head.push(extraDoc);
+      return head.join("\n") + "\n" + src;
     }
 
     const envMatch = src.match(/\\begin\{(\w+)\}/);
@@ -183,7 +294,7 @@ export class TikzRenderer {
   private cleanSvg(svg: string): string {
     return svg
       .replace(/^\s*<\?xml[^>]*\?>\s*/, "")
-      .replace(/^\s*<!--[\s\S]*?-->\s*/, "")
+      .replace(/^(?:\s*<!--[\s\S]*?-->\s*)+/, "")
       .trim();
   }
 
@@ -194,12 +305,16 @@ export class TikzRenderer {
     const elRe = /<(path|rect|circle|ellipse|line|polyline|polygon|text)\b[^>]*>/gi;
     let visible = false;
     let m: RegExpExecArray | null;
+    // dvisvgm normally emits single-quoted attributes, but accept double
+    // quotes too so a valid SVG is never mistaken for a blank one.
+    const attr = (tag: string, name: string): string | undefined =>
+      new RegExp(`${name}=["']([^"']*)["']`).exec(tag)?.[1];
     while ((m = elRe.exec(svg)) !== null) {
       const tag = m[0];
-      const stroke = /stroke='([^']*)'/.exec(tag)?.[1];
-      const fill = /fill='([^']*)'/.exec(tag)?.[1];
-      const strokeOp = /stroke-opacity='([^']*)'/.exec(tag)?.[1];
-      const fillOp = /fill-opacity='([^']*)'/.exec(tag)?.[1];
+      const stroke = attr(tag, "stroke");
+      const fill = attr(tag, "fill");
+      const strokeOp = attr(tag, "stroke-opacity");
+      const fillOp = attr(tag, "fill-opacity");
       const strokeVisible = stroke !== undefined && stroke !== "" && stroke !== "none" && strokeOp !== "0";
       const fillVisible = fill !== undefined && fill !== "" && fill !== "none" && fillOp !== "0";
       if (strokeVisible || fillVisible) {
@@ -222,7 +337,7 @@ export class TikzRenderer {
       tail = (errs.length ? errs : lines).slice(-25).join("\n");
     }
     const detail = errors.length
-      ? errors.map((e, i) => `Tentativo ${i + 1}: ${e}`).join("\n\n")
+      ? errors.map((e, i) => `${this.plugin.t("Attempt")} ${i + 1}: ${e}`).join("\n\n")
       : "";
     return detail + (tail ? `\n\n--- LaTeX log ---\n${tail}` : "");
   }
@@ -230,19 +345,38 @@ export class TikzRenderer {
   private resolveLatex(engine: "pdf" | "dvi"): string {
     const cfg = this.plugin.settings.tikzLatexBin.trim();
     if (cfg) return this.withExe(cfg);
-    return this.findInPath(engine === "pdf" ? "pdflatex" : "latex") ?? "";
+    return this.findInPathCached(engine === "pdf" ? "pdflatex" : "latex") ?? "";
   }
 
   private resolveDvisvgm(): string {
     const cfg = this.plugin.settings.tikzDvisvgmBin.trim();
     if (cfg) return this.withExe(cfg);
-    return this.findInPath("dvisvgm") ?? "";
+    return this.findInPathCached("dvisvgm") ?? "";
   }
 
   private withExe(bin: string): string {
     if (process.platform !== "win32") return bin;
-    if (bin.toLowerCase().endsWith(".exe") || bin.includes("\\") || bin.includes("/")) return bin;
+    const lower = bin.toLowerCase();
+    if (
+      lower.endsWith(".exe") ||
+      lower.endsWith(".cmd") ||
+      lower.endsWith(".bat") ||
+      bin.includes("\\") ||
+      bin.includes("/")
+    ) {
+      return bin;
+    }
     return bin + ".exe";
+  }
+
+  // Cached PATH lookup: the PATH does not change while the plugin is loaded, so
+  // there is no need to scan every directory on each render.
+  private findInPathCached(name: string): string | null {
+    const cached = this.binCache.get(name);
+    if (cached !== undefined) return cached;
+    const found = this.findInPath(name);
+    this.binCache.set(name, found);
+    return found;
   }
 
   private findInPath(name: string): string | null {
@@ -259,11 +393,14 @@ export class TikzRenderer {
   }
 
   private run(bin: string, args: string[], cwd: string): Promise<void> {
+    const lower = bin.toLowerCase();
+    // .cmd/.bat cannot be launched by execFile on Windows without a shell.
+    const shell = process.platform === "win32" && (lower.endsWith(".cmd") || lower.endsWith(".bat"));
     return new Promise((resolve, reject) => {
       execFile(
         bin,
         args,
-        { cwd, windowsHide: true, timeout: 120000, env: process.env },
+        { cwd, windowsHide: true, timeout: 120000, env: process.env, shell },
         (error, _stdout, stderr) => {
           if (error) {
             const e = error as NodeJS.ErrnoException;

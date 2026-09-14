@@ -168,9 +168,14 @@ export class TikzSettingTab extends PluginSettingTab {
       .setName(t("Clear rendering cache"))
       .setDesc(t("Deletes the already compiled SVGs (useful after preamble changes or to free space)."))
       .addButton((btn) =>
-        btn.setButtonText(t("Clear")).onClick(() => {
-          this.plugin.tikzRenderer.clearCache();
-          new Notice(t("TikZ cache cleared."));
+        btn.setButtonText(t("Clear")).onClick(async () => {
+          btn.setDisabled(true);
+          try {
+            await this.plugin.tikzRenderer.clearCache();
+            new Notice(t("TikZ cache cleared."));
+          } finally {
+            btn.setDisabled(false);
+          }
         })
       );
   }

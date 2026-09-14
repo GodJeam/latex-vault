@@ -24,7 +24,7 @@ __export(main_exports, {
   default: () => TikzVaultPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // src/tikzRenderer.ts
 var import_child_process = require("child_process");
@@ -37,6 +37,10 @@ var TikzRenderer = class {
     __publicField(this, "plugin");
     __publicField(this, "cacheDir");
     __publicField(this, "inFlight", /* @__PURE__ */ new Map());
+    // In-memory copy of already rendered SVGs: avoids re-reading the disk (and
+    // re-rendering) when the editor recomputes decorations on every keystroke.
+    __publicField(this, "memo", /* @__PURE__ */ new Map());
+    __publicField(this, "binCache", /* @__PURE__ */ new Map());
     this.plugin = plugin;
     this.cacheDir = (0, import_path.join)((0, import_os.tmpdir)(), "tikz-vault-render");
     (0, import_fs.mkdirSync)(this.cacheDir, { recursive: true });
@@ -47,25 +51,45 @@ var TikzRenderer = class {
     const hash = (0, import_crypto.createHash)("sha256").update(tex).digest("hex").slice(0, 32);
     const dir = (0, import_path.join)(this.cacheDir, hash);
     const svgFile = (0, import_path.join)(dir, "main.svg");
-    if ((0, import_fs.existsSync)(svgFile)) {
-      const cached = (0, import_fs.readFileSync)(svgFile, "utf8");
-      if (!this.isBlankSvg(cached)) return cached;
-      try {
-        (0, import_fs.rmSync)(svgFile, { force: true });
-      } catch (e) {
-      }
+    const memoized = this.memo.get(hash);
+    if (memoized) return memoized;
+    const cached = await this.readCache(svgFile);
+    if (cached !== null) {
+      this.memo.set(hash, cached);
+      return cached;
     }
     const existing = this.inFlight.get(hash);
     if (existing) return existing;
-    const promise = this.doRender(tex, dir, svgFile, s).finally(() => {
+    const promise = this.doRender(tex, dir, svgFile, s).then((svg) => {
+      this.memo.set(hash, svg);
+      return svg;
+    }).finally(() => {
       this.inFlight.delete(hash);
     });
     this.inFlight.set(hash, promise);
     return promise;
   }
+  // Read a cached SVG asynchronously so the UI thread is not blocked. A stale
+  // blank SVG (broken dvisvgm output) is discarded so it gets re-rendered.
+  async readCache(svgFile) {
+    let cached;
+    try {
+      cached = await import_fs.promises.readFile(svgFile, "utf8");
+    } catch (e) {
+      return null;
+    }
+    if (this.isBlankSvg(cached)) {
+      try {
+        await import_fs.promises.rm(svgFile, { force: true });
+      } catch (e) {
+      }
+      return null;
+    }
+    return this.cleanSvg(cached);
+  }
   async doRender(tex, dir, svgFile, s) {
-    (0, import_fs.mkdirSync)(dir, { recursive: true });
-    (0, import_fs.writeFileSync)((0, import_path.join)(dir, "main.tex"), tex, "utf8");
+    await import_fs.promises.mkdir(dir, { recursive: true });
+    await import_fs.promises.writeFile((0, import_path.join)(dir, "main.tex"), tex, "utf8");
     const latexPdf = this.resolveLatex("pdf");
     const latexDvi = this.resolveLatex("dvi");
     const dvisvgm = this.resolveDvisvgm();
@@ -74,11 +98,7 @@ var TikzRenderer = class {
       engines.push({
         label: "pdflatex + dvisvgm",
         build: async (d) => {
-          await this.run(
-            latexPdf,
-            ["--interaction=nonstopmode", "--halt-on-error", "--disable-write18", "--enable-installer", "main.tex"],
-            d
-          );
+          await this.run(latexPdf, this.latexArgs(), d);
           await this.run(dvisvgm, ["--pdf", "--no-fonts", "--precision=2", "main.pdf"], d);
         }
       });
@@ -87,11 +107,7 @@ var TikzRenderer = class {
       engines.push({
         label: "latex + dvisvgm",
         build: async (d) => {
-          await this.run(
-            latexDvi,
-            ["--interaction=nonstopmode", "--halt-on-error", "--disable-write18", "--enable-installer", "main.tex"],
-            d
-          );
+          await this.run(latexDvi, this.latexArgs(), d);
           await this.run(dvisvgm, ["--no-fonts", "--precision=2", "main.dvi"], d);
         }
       });
@@ -108,10 +124,12 @@ var TikzRenderer = class {
     for (const engine of engines) {
       try {
         await engine.build(dir);
-        if (!(0, import_fs.existsSync)(svgFile)) {
+        let svg;
+        try {
+          svg = await import_fs.promises.readFile(svgFile, "utf8");
+        } catch (e) {
           throw new Error(`dvisvgm did not produce any SVG (engine ${engine.label})`);
         }
-        const svg = (0, import_fs.readFileSync)(svgFile, "utf8");
         if (this.isBlankSvg(svg)) {
           throw new Error(
             `dvisvgm produced an empty SVG (all strokes/fills are transparent) \u2014 engine ${engine.label}`
@@ -122,7 +140,7 @@ var TikzRenderer = class {
         errors.push(e instanceof Error ? e.message : String(e));
         for (const f of ["main.pdf", "main.dvi"]) {
           try {
-            (0, import_fs.rmSync)((0, import_path.join)(dir, f), { force: true });
+            await import_fs.promises.rm((0, import_path.join)(dir, f), { force: true });
           } catch (e2) {
           }
         }
@@ -130,18 +148,97 @@ var TikzRenderer = class {
     }
     throw new Error(this.buildErrorMessage(errors, dir));
   }
-  clearCache() {
+  // LaTeX arguments. `--disable-write18` and `--enable-installer` are MiKTeX
+  // specific: TeX Live does not accept them, so they are only added on Windows
+  // (where MiKTeX is the common distribution).
+  latexArgs() {
+    const args = ["--interaction=nonstopmode", "--halt-on-error"];
+    if (process.platform === "win32") args.push("--disable-write18", "--enable-installer");
+    args.push("main.tex");
+    return args;
+  }
+  // Wait for in-flight renders before deleting the cache, so a build that is
+  // writing into a cache directory cannot fail with a missing-directory error.
+  async clearCache() {
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight.values()]);
+    }
+    this.memo.clear();
     try {
       (0, import_fs.rmSync)(this.cacheDir, { recursive: true, force: true });
       (0, import_fs.mkdirSync)(this.cacheDir, { recursive: true });
     } catch (e) {
     }
   }
+  // Opportunistic cleanup: drop cached renders older than 14 days and, if the
+  // cache exceeds 256 MB, remove the oldest directories first.
+  cleanupCache() {
+    const maxAgeMs = 14 * 24 * 3600 * 1e3;
+    const maxBytes = 256 * 1024 * 1024;
+    let names;
+    try {
+      names = (0, import_fs.readdirSync)(this.cacheDir);
+    } catch (e) {
+      return;
+    }
+    const now = Date.now();
+    const dirs = [];
+    for (const name of names) {
+      const p = (0, import_path.join)(this.cacheDir, name);
+      try {
+        const st = (0, import_fs.statSync)(p);
+        if (st.isDirectory()) dirs.push({ path: p, mtime: st.mtimeMs, size: this.dirSize(p) });
+      } catch (e) {
+      }
+    }
+    let total = 0;
+    for (const d of dirs) {
+      if (now - d.mtime > maxAgeMs) {
+        try {
+          (0, import_fs.rmSync)(d.path, { recursive: true, force: true });
+        } catch (e) {
+        }
+      } else {
+        total += d.size;
+      }
+    }
+    if (total > maxBytes) {
+      const remaining = dirs.filter((d) => (0, import_fs.existsSync)(d.path)).sort((a, b) => a.mtime - b.mtime);
+      for (const d of remaining) {
+        if (total <= maxBytes) break;
+        try {
+          (0, import_fs.rmSync)(d.path, { recursive: true, force: true });
+          total -= d.size;
+        } catch (e) {
+        }
+      }
+    }
+  }
+  dirSize(dir) {
+    let total = 0;
+    try {
+      for (const name of (0, import_fs.readdirSync)(dir)) {
+        try {
+          total += (0, import_fs.statSync)((0, import_path.join)(dir, name)).size;
+        } catch (e) {
+        }
+      }
+    } catch (e) {
+    }
+    return total;
+  }
   buildTexSource(code, extraPreamble) {
     const src = code.replace(/\r\n/g, "\n").trim();
     if (!src) throw new Error("The TikZ block is empty.");
     if (/\\documentclass\s*\{/.test(src)) {
       return src;
+    }
+    if (/\\begin\{document\}/.test(src)) {
+      const head = ["\\documentclass[border=5pt]{standalone}"];
+      if (!/\\usepackage(?:\[[^\]]*\])?\{tikz\}/.test(src)) head.push("\\usepackage{tikz}");
+      const extraDoc = extraPreamble.trim();
+      if (extraDoc) head.push(extraDoc);
+      return head.join("\n") + "\n" + src;
     }
     const envMatch = src.match(/\\begin\{(\w+)\}/);
     let preamble = "";
@@ -169,22 +266,25 @@ var TikzRenderer = class {
     return parts.join("\n");
   }
   cleanSvg(svg) {
-    return svg.replace(/^\s*<\?xml[^>]*\?>\s*/, "").replace(/^\s*<!--[\s\S]*?-->\s*/, "").trim();
+    return svg.replace(/^\s*<\?xml[^>]*\?>\s*/, "").replace(/^(?:\s*<!--[\s\S]*?-->\s*)+/, "").trim();
   }
   // An SVG is "blank" when every drawing element is invisible (stroke-opacity
   // or fill-opacity equal to 0, or no visible stroke/fill at all). Used to
   // detect broken dvisvgm output and fall back to the next engine.
   isBlankSvg(svg) {
-    var _a, _b, _c, _d;
     const elRe = /<(path|rect|circle|ellipse|line|polyline|polygon|text)\b[^>]*>/gi;
     let visible = false;
     let m;
+    const attr = (tag, name) => {
+      var _a;
+      return (_a = new RegExp(`${name}=["']([^"']*)["']`).exec(tag)) == null ? void 0 : _a[1];
+    };
     while ((m = elRe.exec(svg)) !== null) {
       const tag = m[0];
-      const stroke = (_a = /stroke='([^']*)'/.exec(tag)) == null ? void 0 : _a[1];
-      const fill = (_b = /fill='([^']*)'/.exec(tag)) == null ? void 0 : _b[1];
-      const strokeOp = (_c = /stroke-opacity='([^']*)'/.exec(tag)) == null ? void 0 : _c[1];
-      const fillOp = (_d = /fill-opacity='([^']*)'/.exec(tag)) == null ? void 0 : _d[1];
+      const stroke = attr(tag, "stroke");
+      const fill = attr(tag, "fill");
+      const strokeOp = attr(tag, "stroke-opacity");
+      const fillOp = attr(tag, "fill-opacity");
       const strokeVisible = stroke !== void 0 && stroke !== "" && stroke !== "none" && strokeOp !== "0";
       const fillVisible = fill !== void 0 && fill !== "" && fill !== "none" && fillOp !== "0";
       if (strokeVisible || fillVisible) {
@@ -204,7 +304,7 @@ var TikzRenderer = class {
       );
       tail = (errs.length ? errs : lines).slice(-25).join("\n");
     }
-    const detail = errors.length ? errors.map((e, i) => `Tentativo ${i + 1}: ${e}`).join("\n\n") : "";
+    const detail = errors.length ? errors.map((e, i) => `${this.plugin.t("Attempt")} ${i + 1}: ${e}`).join("\n\n") : "";
     return detail + (tail ? `
 
 --- LaTeX log ---
@@ -214,18 +314,30 @@ ${tail}` : "");
     var _a;
     const cfg = this.plugin.settings.tikzLatexBin.trim();
     if (cfg) return this.withExe(cfg);
-    return (_a = this.findInPath(engine === "pdf" ? "pdflatex" : "latex")) != null ? _a : "";
+    return (_a = this.findInPathCached(engine === "pdf" ? "pdflatex" : "latex")) != null ? _a : "";
   }
   resolveDvisvgm() {
     var _a;
     const cfg = this.plugin.settings.tikzDvisvgmBin.trim();
     if (cfg) return this.withExe(cfg);
-    return (_a = this.findInPath("dvisvgm")) != null ? _a : "";
+    return (_a = this.findInPathCached("dvisvgm")) != null ? _a : "";
   }
   withExe(bin) {
     if (process.platform !== "win32") return bin;
-    if (bin.toLowerCase().endsWith(".exe") || bin.includes("\\") || bin.includes("/")) return bin;
+    const lower = bin.toLowerCase();
+    if (lower.endsWith(".exe") || lower.endsWith(".cmd") || lower.endsWith(".bat") || bin.includes("\\") || bin.includes("/")) {
+      return bin;
+    }
     return bin + ".exe";
+  }
+  // Cached PATH lookup: the PATH does not change while the plugin is loaded, so
+  // there is no need to scan every directory on each render.
+  findInPathCached(name) {
+    const cached = this.binCache.get(name);
+    if (cached !== void 0) return cached;
+    const found = this.findInPath(name);
+    this.binCache.set(name, found);
+    return found;
   }
   findInPath(name) {
     var _a;
@@ -241,11 +353,13 @@ ${tail}` : "");
     return null;
   }
   run(bin, args, cwd) {
+    const lower = bin.toLowerCase();
+    const shell = process.platform === "win32" && (lower.endsWith(".cmd") || lower.endsWith(".bat"));
     return new Promise((resolve, reject) => {
       (0, import_child_process.execFile)(
         bin,
         args,
-        { cwd, windowsHide: true, timeout: 12e4, env: process.env },
+        { cwd, windowsHide: true, timeout: 12e4, env: process.env, shell },
         (error, _stdout, stderr) => {
           if (error) {
             const e = error;
@@ -272,9 +386,13 @@ ${tail}` : "");
 // src/tikzPreview.ts
 var import_state = require("@codemirror/state");
 var import_view = require("@codemirror/view");
+var import_obsidian = require("obsidian");
 var TIKZ_LANG = /^```(tikz|tikzcd|pgfplots)(\s|$)/i;
 var CLOSING_FENCE = /^```\s*$/;
+var blockCache = /* @__PURE__ */ new WeakMap();
 function findTikzBlocks(state) {
+  const cached = blockCache.get(state.doc);
+  if (cached) return cached;
   const blocks = [];
   const doc = state.doc;
   for (let n = 1; n <= doc.lines; n++) {
@@ -301,6 +419,7 @@ function findTikzBlocks(state) {
       n = closeLine;
     }
   }
+  blockCache.set(state.doc, blocks);
   return blocks;
 }
 var tikzExpandEffect = import_state.StateEffect.define();
@@ -344,7 +463,7 @@ var TikzPreviewWidget = class extends import_view.WidgetType {
       wrap.replaceChildren();
       const fig = document.createElement("div");
       fig.className = "tikz-figure";
-      fig.innerHTML = svg;
+      fig.appendChild((0, import_obsidian.sanitizeHTMLToDom)(svg));
       wrap.appendChild(fig);
       finish();
     }).catch((err) => {
@@ -428,7 +547,7 @@ function tikzPreviewExtension(plugin) {
 }
 
 // src/settings.ts
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
 var DEFAULT_SETTINGS = {
   language: "en",
   tikzEnabled: true,
@@ -438,7 +557,7 @@ var DEFAULT_SETTINGS = {
   tikzExtraPreamble: "",
   tikzLivePreview: true
 };
-var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
+var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     __publicField(this, "plugin");
@@ -449,17 +568,17 @@ var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
     const t = (s) => this.plugin.t(s);
     containerEl.empty();
     containerEl.createEl("h2", { text: t("Rendering TikZ") });
-    new import_obsidian.Setting(containerEl).setName(t("Language")).setDesc(t(
+    new import_obsidian2.Setting(containerEl).setName(t("Language")).setDesc(t(
       "Interface language. English is the default. Some command names update after reloading Obsidian."
     )).addDropdown(
       (dd) => dd.addOption("en", t("English")).addOption("it", t("Italian")).setValue(this.plugin.settings.language).onChange(async (value) => {
         this.plugin.settings.language = value;
         await this.plugin.saveSettings();
-        new import_obsidian.Notice(t("Language changed. Reload Obsidian to apply it everywhere."));
+        new import_obsidian2.Notice(t("Language changed. Reload Obsidian to apply it everywhere."));
         this.display();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("Render TikZ code blocks with local TeX")).setDesc(t(
+    new import_obsidian2.Setting(containerEl).setName(t("Render TikZ code blocks with local TeX")).setDesc(t(
       "Renders ```tikz blocks in your notes using the TeX installed on the system (MiKTeX/TeX Live). Supports ALL external libraries (pgfplots, circuitikz, tikz-cd, forest, etc.) that TikZJax cannot load. Rendering happens before the TikZJax plugin, so it takes precedence."
     )).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.tikzEnabled).onChange(async (value) => {
@@ -467,7 +586,7 @@ var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("Live preview in Edit mode")).setDesc(t(
+    new import_obsidian2.Setting(containerEl).setName(t("Live preview in Edit mode")).setDesc(t(
       "Show the image also in Edit mode, below the code block. The preview updates automatically when the code changes."
     )).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.tikzLivePreview).onChange(async (value) => {
@@ -475,7 +594,7 @@ var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("Rendering engine")).setDesc(t(
+    new import_obsidian2.Setting(containerEl).setName(t("Rendering engine")).setDesc(t(
       "auto tries pdflatex+dvisvgm and falls back to latex+dvisvgm. 'pdf' is more compatible with modern packages, 'dvi' is more traditional."
     )).addDropdown(
       (dd) => dd.addOption("auto", t("Auto (recommended)")).addOption("pdf", t("pdflatex + dvisvgm (PDF)")).addOption("dvi", t("latex + dvisvgm (DVI)")).setValue(this.plugin.settings.tikzEngine).onChange(async (value) => {
@@ -483,19 +602,19 @@ var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("latex/pdflatex binary path")).setDesc(t("Leave empty for automatic lookup in the PATH (recommended). Use a full path only if needed.")).addText(
+    new import_obsidian2.Setting(containerEl).setName(t("latex/pdflatex binary path")).setDesc(t("Leave empty for automatic lookup in the PATH (recommended). Use a full path only if needed.")).addText(
       (text) => text.setPlaceholder("(auto)").setValue(this.plugin.settings.tikzLatexBin).onChange(async (value) => {
         this.plugin.settings.tikzLatexBin = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("dvisvgm binary path")).setDesc(t("Leave empty for automatic lookup in the PATH (recommended).")).addText(
+    new import_obsidian2.Setting(containerEl).setName(t("dvisvgm binary path")).setDesc(t("Leave empty for automatic lookup in the PATH (recommended).")).addText(
       (text) => text.setPlaceholder("(auto)").setValue(this.plugin.settings.tikzDvisvgmBin).onChange(async (value) => {
         this.plugin.settings.tikzDvisvgmBin = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("Extra preamble")).setDesc(t(
+    new import_obsidian2.Setting(containerEl).setName(t("Extra preamble")).setDesc(t(
       "Lines to add to the preamble of every rendering. Useful to load frequently used libraries, e.g. \\usepackage{pgfplots} or \\usetikzlibrary{positioning, arrows.meta}."
     )).addTextArea(
       (text) => text.setPlaceholder("\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}").setValue(this.plugin.settings.tikzExtraPreamble).onChange(async (value) => {
@@ -503,7 +622,7 @@ var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("Test TikZ rendering")).setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.")).addButton(
+    new import_obsidian2.Setting(containerEl).setName(t("Test TikZ rendering")).setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.")).addButton(
       (btn) => btn.setButtonText(t("Test")).onClick(async () => {
         btn.setDisabled(true);
         btn.setButtonText(t("Rendering..."));
@@ -511,19 +630,24 @@ var TikzSettingTab = class extends import_obsidian.PluginSettingTab {
           await this.plugin.tikzRenderer.render(
             "\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}\n\\usepackage[siunitx]{circuitikz}\n\\usetikzlibrary{positioning, arrows.meta}\n\\begin{tikzpicture}\n\\draw (0,0) to[R=1k] (3,0);\n\\node[draw, right=1cm of {(3,0)}] (b) {OK};\n\\draw[-{Stealth}] (3,0) -- (b);\n\\end{tikzpicture}"
           );
-          new import_obsidian.Notice(t("TikZ rendering succeeded: the TeX configuration works."));
+          new import_obsidian2.Notice(t("TikZ rendering succeeded: the TeX configuration works."));
         } catch (e) {
-          new import_obsidian.Notice(`${t("TikZ rendering error:")} ${e.message}`);
+          new import_obsidian2.Notice(`${t("TikZ rendering error:")} ${e.message}`);
         } finally {
           btn.setDisabled(false);
           btn.setButtonText(t("Test"));
         }
       })
     );
-    new import_obsidian.Setting(containerEl).setName(t("Clear rendering cache")).setDesc(t("Deletes the already compiled SVGs (useful after preamble changes or to free space).")).addButton(
-      (btn) => btn.setButtonText(t("Clear")).onClick(() => {
-        this.plugin.tikzRenderer.clearCache();
-        new import_obsidian.Notice(t("TikZ cache cleared."));
+    new import_obsidian2.Setting(containerEl).setName(t("Clear rendering cache")).setDesc(t("Deletes the already compiled SVGs (useful after preamble changes or to free space).")).addButton(
+      (btn) => btn.setButtonText(t("Clear")).onClick(async () => {
+        btn.setDisabled(true);
+        try {
+          await this.plugin.tikzRenderer.clearCache();
+          new import_obsidian2.Notice(t("TikZ cache cleared."));
+        } finally {
+          btn.setDisabled(false);
+        }
       })
     );
   }
@@ -566,7 +690,8 @@ var IT = {
   "Show TikZ code": "Mostra codice TikZ",
   "Hide TikZ code": "Nascondi codice TikZ",
   "TikZ rendering error": "Errore di rendering TikZ",
-  "Rendering TikZ...": "Rendering TikZ\u2026"
+  "Rendering TikZ...": "Rendering TikZ\u2026",
+  "Attempt": "Tentativo"
 };
 function translate(lang, text) {
   var _a;
@@ -575,7 +700,7 @@ function translate(lang, text) {
 }
 
 // src/main.ts
-var TikzVaultPlugin = class extends import_obsidian2.Plugin {
+var TikzVaultPlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "settings");
@@ -584,6 +709,7 @@ var TikzVaultPlugin = class extends import_obsidian2.Plugin {
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.tikzRenderer = new TikzRenderer(this);
+    this.tikzRenderer.cleanupCache();
     this.registerEditorExtension(tikzPreviewExtension(this));
     this.registerMarkdownPostProcessor(
       async (el) => {
@@ -619,8 +745,6 @@ var TikzVaultPlugin = class extends import_obsidian2.Plugin {
     var _a, _b;
     return translate((_b = (_a = this.settings) == null ? void 0 : _a.language) != null ? _b : "en", text);
   }
-  onunload() {
-  }
   buildTikzContainer(code) {
     const container = document.createElement("div");
     container.className = "tikz-result";
@@ -636,7 +760,7 @@ var TikzVaultPlugin = class extends import_obsidian2.Plugin {
       const svg = await this.tikzRenderer.render(code);
       status == null ? void 0 : status.remove();
       const figure = container.createEl("div", { cls: "tikz-figure" });
-      figure.innerHTML = svg;
+      figure.appendChild((0, import_obsidian3.sanitizeHTMLToDom)(svg));
     } catch (e) {
       status == null ? void 0 : status.remove();
       const errBox = container.createEl("div", { cls: "tikz-error" });

@@ -139,25 +139,7 @@
   margin: 0 auto;
 }
 
-.tikz-live .tikz-error {
-  width: 100%;
-  color: var(--text-error);
-  font-size: var(--font-smaller);
-}
-
-.tikz-live .tikz-error-msg {
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 160px;
-  overflow-y: auto;
-  margin: 4px 0 0;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  padding: 6px;
-  font-family: var(--font-monospace);
-  color: var(--text-normal);
-}
+/* Error styling is shared by Reading and Edit mode (see .tikz-error below). */
 
 .tikz-error {
   width: 100%;

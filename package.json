@@ -1,11 +1,11 @@
 {
   "name": "tikz-vault",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TikZ rendering for Obsidian using a local TeX installation",
   "main": "main.js",
   "scripts": {
     "dev": "node build/esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck -p build/tsconfig.json && node build/esbuild.config.mjs production"
+    "build": "tsc --noEmit --skipLibCheck -p build/tsconfig.json && node build/esbuild.config.mjs production"
   },
   "keywords": ["obsidian", "tikz", "latex", "svg"],
   "license": "GPL-3.0",

@@ -1,6 +1,7 @@
 import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
+import { sanitizeHTMLToDom } from "obsidian";
 import type TikzVaultPlugin from "./main";
 
 const TIKZ_LANG = /^```(tikz|tikzcd|pgfplots)(\s|$)/i;
@@ -14,7 +15,13 @@ interface TikzBlock {
   code: string;
 }
 
+// The whole document is scanned for fences; cache the result per document
+// snapshot so selection/viewport updates do not rescan it on every keystroke.
+const blockCache = new WeakMap<object, TikzBlock[]>();
+
 function findTikzBlocks(state: EditorState): TikzBlock[] {
+  const cached = blockCache.get(state.doc);
+  if (cached) return cached;
   const blocks: TikzBlock[] = [];
   const doc = state.doc;
 
@@ -45,6 +52,7 @@ function findTikzBlocks(state: EditorState): TikzBlock[] {
     }
   }
 
+  blockCache.set(state.doc, blocks);
   return blocks;
 }
 
@@ -103,7 +111,7 @@ class TikzPreviewWidget extends WidgetType {
         wrap.replaceChildren();
         const fig = document.createElement("div");
         fig.className = "tikz-figure";
-        fig.innerHTML = svg;
+        fig.appendChild(sanitizeHTMLToDom(svg));
         wrap.appendChild(fig);
         finish();
       })

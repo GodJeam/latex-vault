@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import { Plugin, sanitizeHTMLToDom } from "obsidian";
 import { TikzRenderer } from "./tikzRenderer";
 import { tikzPreviewExtension } from "./tikzPreview";
 import { DEFAULT_SETTINGS, TikzSettingTab, TikzSettings } from "./settings";
@@ -11,6 +11,8 @@ export default class TikzVaultPlugin extends Plugin {
   async onload(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.tikzRenderer = new TikzRenderer(this);
+    // Drop stale/oversized cached renders in the background at startup.
+    this.tikzRenderer.cleanupCache();
 
     this.registerEditorExtension(tikzPreviewExtension(this));
 
@@ -50,8 +52,6 @@ export default class TikzVaultPlugin extends Plugin {
     return translate(this.settings?.language ?? "en", text);
   }
 
-  onunload(): void {}
-
   private buildTikzContainer(code: string): HTMLElement {
     const container = document.createElement("div");
     container.className = "tikz-result";
@@ -68,7 +68,7 @@ export default class TikzVaultPlugin extends Plugin {
       const svg = await this.tikzRenderer.render(code);
       status?.remove();
       const figure = container.createEl("div", { cls: "tikz-figure" });
-      figure.innerHTML = svg;
+      figure.appendChild(sanitizeHTMLToDom(svg));
     } catch (e) {
       status?.remove();
       const errBox = container.createEl("div", { cls: "tikz-error" });

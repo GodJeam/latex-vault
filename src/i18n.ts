@@ -51,6 +51,7 @@ const IT: Record<string, string> = {
   "Hide TikZ code": "Nascondi codice TikZ",
   "TikZ rendering error": "Errore di rendering TikZ",
   "Rendering TikZ...": "Rendering TikZ…",
+  "Attempt": "Tentativo",
 };
 
 export function translate(lang: Language, text: string): string {
