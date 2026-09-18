@@ -96,7 +96,7 @@ export class TikzRenderer {
         label: "pdflatex + dvisvgm",
         build: async (d) => {
           await this.run(latexPdf, this.latexArgs(), d);
-          await this.run(dvisvgm, ["--pdf", "--no-fonts", "--precision=2", "main.pdf"], d);
+          await this.run(dvisvgm, ["--pdf", "--no-fonts=1", "--precision=2", "main.pdf"], d);
         },
       });
     }
@@ -105,7 +105,7 @@ export class TikzRenderer {
         label: "latex + dvisvgm",
         build: async (d) => {
           await this.run(latexDvi, this.latexArgs(), d);
-          await this.run(dvisvgm, ["--no-fonts", "--precision=2", "main.dvi"], d);
+          await this.run(dvisvgm, ["--no-fonts=1", "--precision=2", "main.dvi"], d);
         },
       });
     }
