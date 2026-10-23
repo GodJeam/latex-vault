@@ -10,11 +10,11 @@ const IT: Record<string, string> = {
     "Lingua cambiata. Ricarica Obsidian per applicarla ovunque.",
   "English": "Inglese",
   "Italian": "Italiano",
-  "Rendering TikZ": "Rendering TikZ",
-  "Render TikZ code blocks with local TeX":
-    "Render dei blocchi TikZ con TeX locale",
-  "Renders ```tikz blocks in your notes using the TeX installed on the system (MiKTeX/TeX Live). Supports ALL external libraries (pgfplots, circuitikz, tikz-cd, forest, etc.) that TikZJax cannot load. Rendering happens before the TikZJax plugin, so it takes precedence.":
-    "Rende i blocchi ```tikz delle note con il TeX installato sul sistema (MiKTeX/TeX Live). Supporta TUTTE le librerie esterne (pgfplots, circuitikz, tikz-cd, forest, ecc.) che TikZJax non può caricare. Il rendering avviene prima del plugin TikZJax, quindi ha la precedenza.",
+  "LaTeX rendering": "Rendering LaTeX",
+  "Render LaTeX code blocks with local TeX":
+    "Render dei blocchi LaTeX con TeX locale",
+  "Renders ```latex-vault blocks (and the legacy ```tikz, ```tikzcd, ```pgfplots) using the TeX installed on the system (MiKTeX/TeX Live). Any installed package works: TikZ, pgfplots, matrices, algorithms, code listings, math. Rendering happens before the TikZJax plugin, so it takes precedence.":
+    "Rende i blocchi ```latex-vault (e i vecchi ```tikz, ```tikzcd, ```pgfplots) con il TeX installato sul sistema (MiKTeX/TeX Live). Funziona qualsiasi pacchetto installato: TikZ, pgfplots, matrici, algoritmi, codice, matematica. Il rendering avviene prima del plugin TikZJax, quindi ha la precedenza.",
   "Live preview in Edit mode": "Anteprima in modifica (live preview)",
   "Show the image also in Edit mode, below the code block. The preview updates automatically when the code changes.":
     "Mostra l'immagine anche in modalità modifica, sotto il blocco di codice. L'anteprima viene aggiornata automaticamente quando il codice cambia.",
@@ -36,24 +36,24 @@ const IT: Record<string, string> = {
   "Enable shell-escape": "Abilita shell-escape",
   "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults.":
     "Necessario per pacchetti che eseguono programmi esterni, come minted (richiede Pygments). Rischio di sicurezza: i blocchi di codice possono eseguire comandi sul sistema. Abilitalo solo per vault fidati.",
-  "Test TikZ rendering": "Testa rendering TikZ",
+  "Test LaTeX rendering": "Testa rendering LaTeX",
   "Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.":
     "Esegue un diagramma di prova con pgfplots, circuitikz e librerie per verificare la configurazione.",
   "Test": "Test",
   "Rendering...": "Rendering in corso...",
-  "TikZ rendering succeeded: the TeX configuration works.":
-    "Rendering TikZ riuscito: la configurazione TeX funziona.",
-  "TikZ rendering error:": "Errore rendering TikZ:",
+  "LaTeX rendering succeeded: the TeX configuration works.":
+    "Rendering LaTeX riuscito: la configurazione TeX funziona.",
+  "LaTeX rendering error:": "Errore rendering LaTeX:",
   "Clear rendering cache": "Svuota cache rendering",
   "Deletes the already compiled SVGs (useful after preamble changes or to free space).":
     "Elimina gli SVG già compilati (utile dopo modifiche al preambolo o per liberare spazio).",
   "Clear": "Svuota",
-  "TikZ cache cleared.": "Cache TikZ svuotata.",
-  "Rendering TikZ with local TeX...": "Rendering TikZ con TeX locale…",
-  "Show TikZ code": "Mostra codice TikZ",
-  "Hide TikZ code": "Nascondi codice TikZ",
-  "TikZ rendering error": "Errore di rendering TikZ",
-  "Rendering TikZ...": "Rendering TikZ…",
+  "LaTeX cache cleared.": "Cache LaTeX svuotata.",
+  "Rendering LaTeX with local TeX...": "Rendering LaTeX con TeX locale…",
+  "Show LaTeX code": "Mostra codice LaTeX",
+  "Hide LaTeX code": "Nascondi codice LaTeX",
+  "LaTeX rendering error": "Errore di rendering LaTeX",
+  "Rendering LaTeX...": "Rendering LaTeX…",
   "Attempt": "Tentativo",
 };
 

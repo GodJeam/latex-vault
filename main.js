@@ -21,18 +21,18 @@ var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "sy
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => TikzVaultPlugin
+  default: () => LatexVaultPlugin
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian3 = require("obsidian");
 
-// src/tikzRenderer.ts
+// src/renderer.ts
 var import_child_process = require("child_process");
 var import_crypto = require("crypto");
 var import_fs = require("fs");
 var import_os = require("os");
 var import_path = require("path");
-var _TikzRenderer = class _TikzRenderer {
+var _LatexRenderer = class _LatexRenderer {
   constructor(plugin) {
     __publicField(this, "plugin");
     __publicField(this, "cacheDir");
@@ -42,12 +42,12 @@ var _TikzRenderer = class _TikzRenderer {
     __publicField(this, "memo", /* @__PURE__ */ new Map());
     __publicField(this, "binCache", /* @__PURE__ */ new Map());
     this.plugin = plugin;
-    this.cacheDir = (0, import_path.join)((0, import_os.tmpdir)(), "tikz-vault-render");
+    this.cacheDir = (0, import_path.join)((0, import_os.tmpdir)(), "latex-vault-render");
     (0, import_fs.mkdirSync)(this.cacheDir, { recursive: true });
   }
   async render(code) {
     const s = this.plugin.settings;
-    const tex = this.buildTexSource(code, s.tikzExtraPreamble);
+    const tex = this.buildTexSource(code, s.extraPreamble);
     const hash = (0, import_crypto.createHash)("sha256").update(tex).digest("hex").slice(0, 32);
     const dir = (0, import_path.join)(this.cacheDir, hash);
     const svgFile = (0, import_path.join)(dir, "main.svg");
@@ -94,7 +94,7 @@ var _TikzRenderer = class _TikzRenderer {
     const latexDvi = this.resolveLatex("dvi");
     const dvisvgm = this.resolveDvisvgm();
     const engines = [];
-    if (s.tikzEngine !== "dvi" && latexPdf && dvisvgm) {
+    if (s.engine !== "dvi" && latexPdf && dvisvgm) {
       engines.push({
         label: "pdflatex + dvisvgm",
         build: async (d) => {
@@ -103,7 +103,7 @@ var _TikzRenderer = class _TikzRenderer {
         }
       });
     }
-    if (s.tikzEngine !== "pdf" && latexDvi && dvisvgm) {
+    if (s.engine !== "pdf" && latexDvi && dvisvgm) {
       engines.push({
         label: "latex + dvisvgm",
         build: async (d) => {
@@ -153,7 +153,7 @@ var _TikzRenderer = class _TikzRenderer {
   // (where MiKTeX is the common distribution).
   latexArgs() {
     const args = ["--interaction=nonstopmode", "--halt-on-error"];
-    const shell = this.plugin.settings.tikzShellEscape;
+    const shell = this.plugin.settings.shellEscape;
     if (shell) args.push("--shell-escape");
     if (process.platform === "win32") {
       args.push(shell ? "--enable-write18" : "--disable-write18", "--enable-installer");
@@ -233,7 +233,7 @@ var _TikzRenderer = class _TikzRenderer {
   }
   buildTexSource(code, extraPreamble) {
     const src = code.replace(/\r\n/g, "\n").trim();
-    if (!src) throw new Error("The TikZ block is empty.");
+    if (!src) throw new Error("The LaTeX block is empty.");
     if (/\\documentclass\s*[\[{]/.test(src)) {
       return src;
     }
@@ -247,32 +247,46 @@ var _TikzRenderer = class _TikzRenderer {
     const { preamble, body: rawBody } = this.splitPreamble(src);
     let body = rawBody;
     let picture = true;
+    let float = false;
+    const floatMatch = body.match(/^\\begin\{(algorithm|figure|table)\}(\[[^\]]*\])?/);
+    if (floatMatch) {
+      float = true;
+      body = `\\begin{${floatMatch[1]}}[H]` + body.slice(floatMatch[0].length);
+    }
     const envMatch = body.match(/^\\begin\{([\w*-]+)\}/);
     if (envMatch) {
       const env = envMatch[1];
-      if (_TikzRenderer.AXIS_ENVS.has(env)) {
+      if (_LatexRenderer.AXIS_ENVS.has(env)) {
         body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
-      } else if (!_TikzRenderer.PICTURE_ENVS.has(env)) {
+      } else if (!_LatexRenderer.PICTURE_ENVS.has(env)) {
         picture = false;
       }
     } else if (/^\\tikz\s*[{\[]/.test(body)) {
-    } else if (_TikzRenderer.TIKZ_CMD.test(body)) {
+    } else if (_LatexRenderer.TIKZ_CMD.test(body)) {
       body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
     } else {
       picture = false;
     }
     const userPre = preamble + "\n" + extraPreamble;
     const has = (pkg) => new RegExp(`\\\\(?:usepackage|RequirePackage)(?:\\[[^\\]]*\\])?\\{[^}]*\\b${pkg}\\b[^}]*\\}`).test(userPre);
-    const parts = [
-      picture ? "\\documentclass[border=5pt]{standalone}" : "\\documentclass[border=5pt,varwidth]{standalone}"
-    ];
+    const classOpts = ["border=5pt"];
+    if (!picture) classOpts.push("varwidth");
+    if (float) classOpts.push("float");
+    const parts = [`\\documentclass[${classOpts.join(",")}]{standalone}`];
     const add = (pkg, opts = "") => {
       if (!has(pkg)) parts.push(`\\usepackage${opts}{${pkg}}`);
     };
     add("amsmath");
     add("amssymb");
     add("tikz");
-    for (const [re, pkg] of _TikzRenderer.AUTO_PACKAGES) {
+    if (float) {
+      if (/^\\begin\{algorithm\}/.test(body)) {
+        if (!has("algorithm2e")) add("algorithm");
+      } else {
+        add("float");
+      }
+    }
+    for (const [re, pkg] of _LatexRenderer.AUTO_PACKAGES) {
       if (re.test(src)) add(pkg);
     }
     if (/(\\begin\{\w*axis\}|\\addplot)/.test(src) && !has("pgfplots")) {
@@ -347,13 +361,13 @@ ${tail}` : "");
   }
   resolveLatex(engine) {
     var _a;
-    const cfg = this.plugin.settings.tikzLatexBin.trim();
+    const cfg = this.plugin.settings.latexBin.trim();
     if (cfg) return this.withExe(cfg);
     return (_a = this.findInPathCached(engine === "pdf" ? "pdflatex" : "latex")) != null ? _a : "";
   }
   resolveDvisvgm() {
     var _a;
-    const cfg = this.plugin.settings.tikzDvisvgmBin.trim();
+    const cfg = this.plugin.settings.dvisvgmBin.trim();
     if (cfg) return this.withExe(cfg);
     return (_a = this.findInPathCached("dvisvgm")) != null ? _a : "";
   }
@@ -419,7 +433,7 @@ ${tail}` : "");
 };
 // Environments that produce a picture on their own and must NOT be nested in
 // another tikzpicture.
-__publicField(_TikzRenderer, "PICTURE_ENVS", /* @__PURE__ */ new Set([
+__publicField(_LatexRenderer, "PICTURE_ENVS", /* @__PURE__ */ new Set([
   "tikzpicture",
   "tikzcd",
   "forest",
@@ -430,7 +444,7 @@ __publicField(_TikzRenderer, "PICTURE_ENVS", /* @__PURE__ */ new Set([
   "scope"
 ]));
 // pgfplots environments that need a surrounding tikzpicture.
-__publicField(_TikzRenderer, "AXIS_ENVS", /* @__PURE__ */ new Set([
+__publicField(_LatexRenderer, "AXIS_ENVS", /* @__PURE__ */ new Set([
   "axis",
   "semilogxaxis",
   "semilogyaxis",
@@ -441,9 +455,9 @@ __publicField(_TikzRenderer, "AXIS_ENVS", /* @__PURE__ */ new Set([
   "smithchart"
 ]));
 // Bare TikZ drawing commands (block without any environment).
-__publicField(_TikzRenderer, "TIKZ_CMD", /^\\(draw|node|path|fill|filldraw|shade|shadedraw|coordinate|foreach|matrix|pic|clip|graph|useasboundingbox|begin\{scope\}|tikzset)\b/);
+__publicField(_LatexRenderer, "TIKZ_CMD", /^\\(draw|node|path|fill|filldraw|shade|shadedraw|coordinate|foreach|matrix|pic|clip|graph|useasboundingbox|begin\{scope\}|tikzset)\b/);
 // Packages loaded automatically when their environments/commands appear.
-__publicField(_TikzRenderer, "AUTO_PACKAGES", [
+__publicField(_LatexRenderer, "AUTO_PACKAGES", [
   [/\\begin\{tikzcd\}/, "tikz-cd"],
   [/\\begin\{forest\}/, "forest"],
   [/\\begin\{circuitikz\}/, "circuitikz"],
@@ -461,23 +475,29 @@ __publicField(_TikzRenderer, "AUTO_PACKAGES", [
   [/\\cancel(to)?\b/, "cancel"],
   [/\\(SI|si|num|unit)\{/, "siunitx"]
 ]);
-var TikzRenderer = _TikzRenderer;
+var LatexRenderer = _LatexRenderer;
 
-// src/tikzPreview.ts
+// src/livePreview.ts
 var import_state = require("@codemirror/state");
 var import_view = require("@codemirror/view");
 var import_obsidian = require("obsidian");
-var TIKZ_LANG = /^```(tikz|tikzcd|pgfplots)(\s|$)/i;
+
+// src/languages.ts
+var LANGUAGES = ["latex-vault", "tikz", "tikzcd", "pgfplots"];
+var LANGUAGE_SELECTOR = LANGUAGES.map((l) => `pre > code.language-${l}`).join(", ");
+var FENCE_RE = new RegExp("^```(" + LANGUAGES.join("|") + ")(\\s|$)", "i");
+
+// src/livePreview.ts
 var CLOSING_FENCE = /^```\s*$/;
 var blockCache = /* @__PURE__ */ new WeakMap();
-function findTikzBlocks(state) {
+function findLatexBlocks(state) {
   const cached = blockCache.get(state.doc);
   if (cached) return cached;
   const blocks = [];
   const doc = state.doc;
   for (let n = 1; n <= doc.lines; n++) {
     const line = doc.line(n);
-    if (!TIKZ_LANG.test(line.text.trim())) continue;
+    if (!FENCE_RE.test(line.text.trim())) continue;
     let closeLine = 0;
     for (let k = n + 1; k <= doc.lines; k++) {
       const l = doc.line(k);
@@ -502,10 +522,10 @@ function findTikzBlocks(state) {
   blockCache.set(state.doc, blocks);
   return blocks;
 }
-var tikzExpandEffect = import_state.StateEffect.define();
-var tikzCollapseEffect = import_state.StateEffect.define();
-var tikzRecalcEffect = import_state.StateEffect.define();
-var TikzPreviewWidget = class extends import_view.WidgetType {
+var expandEffect = import_state.StateEffect.define();
+var collapseEffect = import_state.StateEffect.define();
+var recalcEffect = import_state.StateEffect.define();
+var LatexPreviewWidget = class extends import_view.WidgetType {
   constructor(code, renderFn, t, from, expanded) {
     super();
     this.code = code;
@@ -520,20 +540,20 @@ var TikzPreviewWidget = class extends import_view.WidgetType {
   }
   toDOM() {
     const wrap = document.createElement("div");
-    wrap.className = "tikz-live";
+    wrap.className = "latex-live";
     const status = document.createElement("div");
-    status.className = "tikz-status";
-    status.textContent = this.t("Rendering TikZ...");
+    status.className = "latex-status";
+    status.textContent = this.t("Rendering LaTeX...");
     wrap.appendChild(status);
     const finish = () => {
       const btn = document.createElement("button");
-      btn.className = "tikz-source-toggle";
-      btn.textContent = this.expanded ? this.t("Hide TikZ code") : this.t("Show TikZ code");
+      btn.className = "latex-source-toggle";
+      btn.textContent = this.expanded ? this.t("Hide LaTeX code") : this.t("Show LaTeX code");
       btn.addEventListener("click", () => {
         const view = import_view.EditorView.findFromDOM(wrap);
         if (!view) return;
         view.dispatch({
-          effects: this.expanded ? tikzCollapseEffect.of(this.from) : tikzExpandEffect.of(this.from)
+          effects: this.expanded ? collapseEffect.of(this.from) : expandEffect.of(this.from)
         });
       });
       wrap.appendChild(btn);
@@ -542,7 +562,7 @@ var TikzPreviewWidget = class extends import_view.WidgetType {
       if (this.destroyed) return;
       wrap.replaceChildren();
       const fig = document.createElement("div");
-      fig.className = "tikz-figure";
+      fig.className = "latex-figure";
       fig.appendChild((0, import_obsidian.sanitizeHTMLToDom)(svg));
       wrap.appendChild(fig);
       finish();
@@ -550,13 +570,13 @@ var TikzPreviewWidget = class extends import_view.WidgetType {
       if (this.destroyed) return;
       wrap.replaceChildren();
       const errBox = document.createElement("div");
-      errBox.className = "tikz-error";
+      errBox.className = "latex-error";
       const title = document.createElement("div");
-      title.className = "tikz-error-title";
-      title.textContent = this.t("TikZ rendering error");
+      title.className = "latex-error-title";
+      title.textContent = this.t("LaTeX rendering error");
       errBox.appendChild(title);
       const pre = document.createElement("pre");
-      pre.className = "tikz-error-msg";
+      pre.className = "latex-error-msg";
       pre.textContent = err instanceof Error ? err.message : String(err);
       errBox.appendChild(pre);
       wrap.appendChild(errBox);
@@ -572,45 +592,45 @@ var TikzPreviewWidget = class extends import_view.WidgetType {
   }
 };
 function computeDecorations(state, plugin, expanded) {
-  if (!plugin.settings.tikzEnabled || !plugin.settings.tikzLivePreview) return import_view.Decoration.none;
+  if (!plugin.settings.enabled || !plugin.settings.livePreview) return import_view.Decoration.none;
   const builder = new import_state.RangeSetBuilder();
-  const render = (code) => plugin.tikzRenderer.render(code);
+  const render = (code) => plugin.renderer.render(code);
   try {
-    for (const block of findTikzBlocks(state)) {
+    for (const block of findLatexBlocks(state)) {
       if (!expanded.has(block.from)) {
         for (let k = block.fromLine; k <= block.toLine; k++) {
           const pos = state.doc.line(k).from;
-          builder.add(pos, pos, import_view.Decoration.line({ class: "tikz-code-hidden" }));
+          builder.add(pos, pos, import_view.Decoration.line({ class: "latex-code-hidden" }));
         }
       }
       builder.add(
         block.to,
         block.to,
         import_view.Decoration.widget({
-          widget: new TikzPreviewWidget(block.code, render, plugin.t, block.from, expanded.has(block.from)),
+          widget: new LatexPreviewWidget(block.code, render, plugin.t, block.from, expanded.has(block.from)),
           block: true,
           side: 1
         })
       );
     }
   } catch (e) {
-    console.error("tikz-vault: error building TikZ decorations:", e);
+    console.error("latex-vault: error building LaTeX decorations:", e);
   }
   return builder.finish();
 }
-function tikzPreviewExtension(plugin) {
+function livePreviewExtension(plugin) {
   const field = import_state.StateField.define({
     create(state) {
       return { deco: computeDecorations(state, plugin, /* @__PURE__ */ new Set()), expanded: /* @__PURE__ */ new Set() };
     },
     update(value, tr) {
-      const relevant = tr.docChanged || tr.effects.some((e) => e.is(tikzExpandEffect) || e.is(tikzCollapseEffect) || e.is(tikzRecalcEffect));
+      const relevant = tr.docChanged || tr.effects.some((e) => e.is(expandEffect) || e.is(collapseEffect) || e.is(recalcEffect));
       if (!relevant) return value;
       const expanded = /* @__PURE__ */ new Set();
       for (const pos of value.expanded) expanded.add(tr.changes.mapPos(pos, -1));
       for (const e of tr.effects) {
-        if (e.is(tikzExpandEffect)) expanded.add(e.value);
-        else if (e.is(tikzCollapseEffect)) expanded.delete(e.value);
+        if (e.is(expandEffect)) expanded.add(e.value);
+        else if (e.is(collapseEffect)) expanded.delete(e.value);
       }
       return { deco: computeDecorations(tr.state, plugin, expanded), expanded };
     },
@@ -620,7 +640,7 @@ function tikzPreviewExtension(plugin) {
     field,
     import_view.EditorView.updateListener.of((update) => {
       if (update.viewportChanged) {
-        update.view.dispatch({ effects: tikzRecalcEffect.of(null) });
+        update.view.dispatch({ effects: recalcEffect.of(null) });
       }
     })
   ];
@@ -630,15 +650,15 @@ function tikzPreviewExtension(plugin) {
 var import_obsidian2 = require("obsidian");
 var DEFAULT_SETTINGS = {
   language: "en",
-  tikzEnabled: true,
-  tikzEngine: "auto",
-  tikzLatexBin: "",
-  tikzDvisvgmBin: "",
-  tikzExtraPreamble: "",
-  tikzLivePreview: true,
-  tikzShellEscape: false
+  enabled: true,
+  engine: "auto",
+  latexBin: "",
+  dvisvgmBin: "",
+  extraPreamble: "",
+  livePreview: true,
+  shellEscape: false
 };
-var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
+var LatexSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     __publicField(this, "plugin");
@@ -648,7 +668,7 @@ var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
     const { containerEl } = this;
     const t = (s) => this.plugin.t(s);
     containerEl.empty();
-    containerEl.createEl("h2", { text: t("Rendering TikZ") });
+    containerEl.createEl("h2", { text: t("LaTeX rendering") });
     new import_obsidian2.Setting(containerEl).setName(t("Language")).setDesc(t(
       "Interface language. English is the default. Some command names update after reloading Obsidian."
     )).addDropdown(
@@ -659,70 +679,70 @@ var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
         this.display();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName(t("Render TikZ code blocks with local TeX")).setDesc(t(
-      "Renders ```tikz blocks in your notes using the TeX installed on the system (MiKTeX/TeX Live). Supports ALL external libraries (pgfplots, circuitikz, tikz-cd, forest, etc.) that TikZJax cannot load. Rendering happens before the TikZJax plugin, so it takes precedence."
+    new import_obsidian2.Setting(containerEl).setName(t("Render LaTeX code blocks with local TeX")).setDesc(t(
+      "Renders ```latex-vault blocks (and the legacy ```tikz, ```tikzcd, ```pgfplots) using the TeX installed on the system (MiKTeX/TeX Live). Any installed package works: TikZ, pgfplots, matrices, algorithms, code listings, math. Rendering happens before the TikZJax plugin, so it takes precedence."
     )).addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.tikzEnabled).onChange(async (value) => {
-        this.plugin.settings.tikzEnabled = value;
+      (toggle) => toggle.setValue(this.plugin.settings.enabled).onChange(async (value) => {
+        this.plugin.settings.enabled = value;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName(t("Live preview in Edit mode")).setDesc(t(
       "Show the image also in Edit mode, below the code block. The preview updates automatically when the code changes."
     )).addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.tikzLivePreview).onChange(async (value) => {
-        this.plugin.settings.tikzLivePreview = value;
+      (toggle) => toggle.setValue(this.plugin.settings.livePreview).onChange(async (value) => {
+        this.plugin.settings.livePreview = value;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName(t("Rendering engine")).setDesc(t(
       "auto tries pdflatex+dvisvgm and falls back to latex+dvisvgm. 'pdf' is more compatible with modern packages, 'dvi' is more traditional."
     )).addDropdown(
-      (dd) => dd.addOption("auto", t("Auto (recommended)")).addOption("pdf", t("pdflatex + dvisvgm (PDF)")).addOption("dvi", t("latex + dvisvgm (DVI)")).setValue(this.plugin.settings.tikzEngine).onChange(async (value) => {
-        this.plugin.settings.tikzEngine = value;
+      (dd) => dd.addOption("auto", t("Auto (recommended)")).addOption("pdf", t("pdflatex + dvisvgm (PDF)")).addOption("dvi", t("latex + dvisvgm (DVI)")).setValue(this.plugin.settings.engine).onChange(async (value) => {
+        this.plugin.settings.engine = value;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName(t("latex/pdflatex binary path")).setDesc(t("Leave empty for automatic lookup in the PATH (recommended). Use a full path only if needed.")).addText(
-      (text) => text.setPlaceholder("(auto)").setValue(this.plugin.settings.tikzLatexBin).onChange(async (value) => {
-        this.plugin.settings.tikzLatexBin = value.trim();
+      (text) => text.setPlaceholder("(auto)").setValue(this.plugin.settings.latexBin).onChange(async (value) => {
+        this.plugin.settings.latexBin = value.trim();
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName(t("dvisvgm binary path")).setDesc(t("Leave empty for automatic lookup in the PATH (recommended).")).addText(
-      (text) => text.setPlaceholder("(auto)").setValue(this.plugin.settings.tikzDvisvgmBin).onChange(async (value) => {
-        this.plugin.settings.tikzDvisvgmBin = value.trim();
+      (text) => text.setPlaceholder("(auto)").setValue(this.plugin.settings.dvisvgmBin).onChange(async (value) => {
+        this.plugin.settings.dvisvgmBin = value.trim();
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName(t("Extra preamble")).setDesc(t(
       "Lines to add to the preamble of every rendering. Useful to load frequently used libraries, e.g. \\usepackage{pgfplots} or \\usetikzlibrary{positioning, arrows.meta}."
     )).addTextArea(
-      (text) => text.setPlaceholder("\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}").setValue(this.plugin.settings.tikzExtraPreamble).onChange(async (value) => {
-        this.plugin.settings.tikzExtraPreamble = value;
+      (text) => text.setPlaceholder("\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}").setValue(this.plugin.settings.extraPreamble).onChange(async (value) => {
+        this.plugin.settings.extraPreamble = value;
         await this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName(t("Enable shell-escape")).setDesc(t(
       "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults."
     )).addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.tikzShellEscape).onChange(async (value) => {
-        this.plugin.settings.tikzShellEscape = value;
+      (toggle) => toggle.setValue(this.plugin.settings.shellEscape).onChange(async (value) => {
+        this.plugin.settings.shellEscape = value;
         await this.plugin.saveSettings();
-        await this.plugin.tikzRenderer.clearCache();
+        await this.plugin.renderer.clearCache();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName(t("Test TikZ rendering")).setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.")).addButton(
+    new import_obsidian2.Setting(containerEl).setName(t("Test LaTeX rendering")).setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.")).addButton(
       (btn) => btn.setButtonText(t("Test")).onClick(async () => {
         btn.setDisabled(true);
         btn.setButtonText(t("Rendering..."));
         try {
-          await this.plugin.tikzRenderer.render(
+          await this.plugin.renderer.render(
             "\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}\n\\usepackage[siunitx]{circuitikz}\n\\usetikzlibrary{positioning, arrows.meta}\n\\begin{tikzpicture}\n\\draw (0,0) to[R=1k] (3,0);\n\\node[draw, right=1cm of {(3,0)}] (b) {OK};\n\\draw[-{Stealth}] (3,0) -- (b);\n\\end{tikzpicture}"
           );
-          new import_obsidian2.Notice(t("TikZ rendering succeeded: the TeX configuration works."));
+          new import_obsidian2.Notice(t("LaTeX rendering succeeded: the TeX configuration works."));
         } catch (e) {
-          new import_obsidian2.Notice(`${t("TikZ rendering error:")} ${e.message}`);
+          new import_obsidian2.Notice(`${t("LaTeX rendering error:")} ${e.message}`);
         } finally {
           btn.setDisabled(false);
           btn.setButtonText(t("Test"));
@@ -733,8 +753,8 @@ var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
       (btn) => btn.setButtonText(t("Clear")).onClick(async () => {
         btn.setDisabled(true);
         try {
-          await this.plugin.tikzRenderer.clearCache();
-          new import_obsidian2.Notice(t("TikZ cache cleared."));
+          await this.plugin.renderer.clearCache();
+          new import_obsidian2.Notice(t("LaTeX cache cleared."));
         } finally {
           btn.setDisabled(false);
         }
@@ -750,9 +770,9 @@ var IT = {
   "Language changed. Reload Obsidian to apply it everywhere.": "Lingua cambiata. Ricarica Obsidian per applicarla ovunque.",
   "English": "Inglese",
   "Italian": "Italiano",
-  "Rendering TikZ": "Rendering TikZ",
-  "Render TikZ code blocks with local TeX": "Render dei blocchi TikZ con TeX locale",
-  "Renders ```tikz blocks in your notes using the TeX installed on the system (MiKTeX/TeX Live). Supports ALL external libraries (pgfplots, circuitikz, tikz-cd, forest, etc.) that TikZJax cannot load. Rendering happens before the TikZJax plugin, so it takes precedence.": "Rende i blocchi ```tikz delle note con il TeX installato sul sistema (MiKTeX/TeX Live). Supporta TUTTE le librerie esterne (pgfplots, circuitikz, tikz-cd, forest, ecc.) che TikZJax non pu\xF2 caricare. Il rendering avviene prima del plugin TikZJax, quindi ha la precedenza.",
+  "LaTeX rendering": "Rendering LaTeX",
+  "Render LaTeX code blocks with local TeX": "Render dei blocchi LaTeX con TeX locale",
+  "Renders ```latex-vault blocks (and the legacy ```tikz, ```tikzcd, ```pgfplots) using the TeX installed on the system (MiKTeX/TeX Live). Any installed package works: TikZ, pgfplots, matrices, algorithms, code listings, math. Rendering happens before the TikZJax plugin, so it takes precedence.": "Rende i blocchi ```latex-vault (e i vecchi ```tikz, ```tikzcd, ```pgfplots) con il TeX installato sul sistema (MiKTeX/TeX Live). Funziona qualsiasi pacchetto installato: TikZ, pgfplots, matrici, algoritmi, codice, matematica. Il rendering avviene prima del plugin TikZJax, quindi ha la precedenza.",
   "Live preview in Edit mode": "Anteprima in modifica (live preview)",
   "Show the image also in Edit mode, below the code block. The preview updates automatically when the code changes.": "Mostra l'immagine anche in modalit\xE0 modifica, sotto il blocco di codice. L'anteprima viene aggiornata automaticamente quando il codice cambia.",
   "Rendering engine": "Motore di rendering",
@@ -768,21 +788,21 @@ var IT = {
   "Lines to add to the preamble of every rendering. Useful to load frequently used libraries, e.g. \\usepackage{pgfplots} or \\usetikzlibrary{positioning, arrows.meta}.": "Linee da aggiungere al preambolo di ogni rendering. Utile per caricare librerie usate di frequente, es. \\usepackage{pgfplots} oppure \\usetikzlibrary{positioning, arrows.meta}.",
   "Enable shell-escape": "Abilita shell-escape",
   "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults.": "Necessario per pacchetti che eseguono programmi esterni, come minted (richiede Pygments). Rischio di sicurezza: i blocchi di codice possono eseguire comandi sul sistema. Abilitalo solo per vault fidati.",
-  "Test TikZ rendering": "Testa rendering TikZ",
+  "Test LaTeX rendering": "Testa rendering LaTeX",
   "Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.": "Esegue un diagramma di prova con pgfplots, circuitikz e librerie per verificare la configurazione.",
   "Test": "Test",
   "Rendering...": "Rendering in corso...",
-  "TikZ rendering succeeded: the TeX configuration works.": "Rendering TikZ riuscito: la configurazione TeX funziona.",
-  "TikZ rendering error:": "Errore rendering TikZ:",
+  "LaTeX rendering succeeded: the TeX configuration works.": "Rendering LaTeX riuscito: la configurazione TeX funziona.",
+  "LaTeX rendering error:": "Errore rendering LaTeX:",
   "Clear rendering cache": "Svuota cache rendering",
   "Deletes the already compiled SVGs (useful after preamble changes or to free space).": "Elimina gli SVG gi\xE0 compilati (utile dopo modifiche al preambolo o per liberare spazio).",
   "Clear": "Svuota",
-  "TikZ cache cleared.": "Cache TikZ svuotata.",
-  "Rendering TikZ with local TeX...": "Rendering TikZ con TeX locale\u2026",
-  "Show TikZ code": "Mostra codice TikZ",
-  "Hide TikZ code": "Nascondi codice TikZ",
-  "TikZ rendering error": "Errore di rendering TikZ",
-  "Rendering TikZ...": "Rendering TikZ\u2026",
+  "LaTeX cache cleared.": "Cache LaTeX svuotata.",
+  "Rendering LaTeX with local TeX...": "Rendering LaTeX con TeX locale\u2026",
+  "Show LaTeX code": "Mostra codice LaTeX",
+  "Hide LaTeX code": "Nascondi codice LaTeX",
+  "LaTeX rendering error": "Errore di rendering LaTeX",
+  "Rendering LaTeX...": "Rendering LaTeX\u2026",
   "Attempt": "Tentativo"
 };
 function translate(lang, text) {
@@ -792,77 +812,90 @@ function translate(lang, text) {
 }
 
 // src/main.ts
-var TikzVaultPlugin = class extends import_obsidian3.Plugin {
+var LatexVaultPlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
     __publicField(this, "settings");
-    __publicField(this, "tikzRenderer");
+    __publicField(this, "renderer");
   }
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    this.tikzRenderer = new TikzRenderer(this);
-    this.tikzRenderer.cleanupCache();
-    this.registerEditorExtension(tikzPreviewExtension(this));
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, migrateSettings(await this.loadLegacyAwareData()));
+    this.renderer = new LatexRenderer(this);
+    this.renderer.cleanupCache();
+    this.registerEditorExtension(livePreviewExtension(this));
     this.registerMarkdownPostProcessor(
       async (el) => {
-        if (!this.settings.tikzEnabled) return;
+        if (!this.settings.enabled) return;
         try {
           const candidates = Array.from(
-            el.querySelectorAll(
-              "pre > code.language-tikz, pre > code.language-tikzcd, pre > code.language-pgfplots"
-            )
+            el.querySelectorAll(LANGUAGE_SELECTOR)
           );
           for (const codeEl of candidates) {
             try {
               const pre = codeEl.parentElement;
               if (!pre) continue;
               const code = codeEl.innerText;
-              const container = this.buildTikzContainer(code);
+              const container = this.buildContainer(code);
               pre.replaceWith(container);
-              await this.fillTikzContainer(container, code);
+              await this.fillContainer(container, code);
             } catch (e) {
-              console.error("tikz-vault: error in the TikZ post-processor:", e);
+              console.error("latex-vault: error in the LaTeX post-processor:", e);
             }
           }
         } catch (e) {
-          console.error("tikz-vault: error in the TikZ post-processor:", e);
+          console.error("latex-vault: error in the LaTeX post-processor:", e);
         }
       },
       -1e3
     );
-    this.addSettingTab(new TikzSettingTab(this.app, this));
+    this.addSettingTab(new LatexSettingTab(this.app, this));
+  }
+  // Settings of the plugin, falling back to the data of the old "tikz-vault"
+  // plugin id so that renaming the plugin does not lose the configuration.
+  async loadLegacyAwareData() {
+    const data = await this.loadData();
+    if (data) return data;
+    const legacy = `${this.app.vault.configDir}/plugins/tikz-vault/data.json`;
+    try {
+      if (await this.app.vault.adapter.exists(legacy)) {
+        return JSON.parse(await this.app.vault.adapter.read(legacy));
+      }
+    } catch (e) {
+      console.error("latex-vault: cannot read legacy tikz-vault settings:", e);
+    }
+    return null;
   }
   // Translate a UI string according to the selected language.
   t(text) {
     var _a, _b;
     return translate((_b = (_a = this.settings) == null ? void 0 : _a.language) != null ? _b : "en", text);
   }
-  buildTikzContainer(code) {
+  buildContainer(code) {
     const container = document.createElement("div");
-    container.className = "tikz-result";
-    container.dataset.tikzCode = code;
-    const status = container.createEl("div", { cls: "tikz-status" });
-    status.setText(this.t("Rendering TikZ with local TeX..."));
-    status.addClass("tikz-loading");
+    container.className = "latex-result";
+    container.dataset.latexCode = code;
+    const status = container.createEl("div", { cls: "latex-status" });
+    status.setText(this.t("Rendering LaTeX with local TeX..."));
+    status.addClass("latex-loading");
     return container;
   }
-  async fillTikzContainer(container, code) {
-    const status = container.querySelector(".tikz-status");
+  async fillContainer(container, code) {
+    const status = container.querySelector(".latex-status");
     try {
-      const svg = await this.tikzRenderer.render(code);
+      const svg = await this.renderer.render(code);
       status == null ? void 0 : status.remove();
-      const figure = container.createEl("div", { cls: "tikz-figure" });
+      const figure = container.createEl("div", { cls: "latex-figure" });
       figure.appendChild((0, import_obsidian3.sanitizeHTMLToDom)(svg));
     } catch (e) {
       status == null ? void 0 : status.remove();
-      const errBox = container.createEl("div", { cls: "tikz-error" });
+      const errBox = container.createEl("div", { cls: "latex-error" });
       errBox.createEl("div", {
-        text: this.t("TikZ rendering error"),
-        cls: "tikz-error-title"
+        text: this.t("LaTeX rendering error"),
+        cls: "latex-error-title"
       });
       errBox.createEl("pre", {
         text: e instanceof Error ? e.message : String(e),
-        cls: "tikz-error-msg"
+        cls: "latex-error-msg"
       });
     }
   }
@@ -870,3 +903,23 @@ var TikzVaultPlugin = class extends import_obsidian3.Plugin {
     await this.saveData(this.settings);
   }
 };
+function migrateSettings(data) {
+  if (!data) return {};
+  const out = { ...data };
+  const keys = {
+    tikzEnabled: "enabled",
+    tikzEngine: "engine",
+    tikzLatexBin: "latexBin",
+    tikzDvisvgmBin: "dvisvgmBin",
+    tikzExtraPreamble: "extraPreamble",
+    tikzLivePreview: "livePreview",
+    tikzShellEscape: "shellEscape"
+  };
+  for (const [oldKey, newKey] of Object.entries(keys)) {
+    if (oldKey in out) {
+      if (!(newKey in out)) out[newKey] = out[oldKey];
+      delete out[oldKey];
+    }
+  }
+  return out;
+}

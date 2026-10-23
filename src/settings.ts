@@ -1,35 +1,35 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type TikzVaultPlugin from "./main";
+import type LatexVaultPlugin from "./main";
 import type { Language } from "./i18n";
 
-export type TikzEngine = "auto" | "pdf" | "dvi";
+export type LatexEngine = "auto" | "pdf" | "dvi";
 
-export interface TikzSettings {
+export interface LatexSettings {
   language: Language;
-  tikzEnabled: boolean;
-  tikzEngine: TikzEngine;
-  tikzLatexBin: string;
-  tikzDvisvgmBin: string;
-  tikzExtraPreamble: string;
-  tikzLivePreview: boolean;
-  tikzShellEscape: boolean;
+  enabled: boolean;
+  engine: LatexEngine;
+  latexBin: string;
+  dvisvgmBin: string;
+  extraPreamble: string;
+  livePreview: boolean;
+  shellEscape: boolean;
 }
 
-export const DEFAULT_SETTINGS: TikzSettings = {
+export const DEFAULT_SETTINGS: LatexSettings = {
   language: "en",
-  tikzEnabled: true,
-  tikzEngine: "auto",
-  tikzLatexBin: "",
-  tikzDvisvgmBin: "",
-  tikzExtraPreamble: "",
-  tikzLivePreview: true,
-  tikzShellEscape: false,
+  enabled: true,
+  engine: "auto",
+  latexBin: "",
+  dvisvgmBin: "",
+  extraPreamble: "",
+  livePreview: true,
+  shellEscape: false,
 };
 
-export class TikzSettingTab extends PluginSettingTab {
-  plugin: TikzVaultPlugin;
+export class LatexSettingTab extends PluginSettingTab {
+  plugin: LatexVaultPlugin;
 
-  constructor(app: App, plugin: TikzVaultPlugin) {
+  constructor(app: App, plugin: LatexVaultPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -39,7 +39,7 @@ export class TikzSettingTab extends PluginSettingTab {
     const t = (s: string) => this.plugin.t(s);
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: t("Rendering TikZ") });
+    containerEl.createEl("h2", { text: t("LaTeX rendering") });
 
     new Setting(containerEl)
       .setName(t("Language"))
@@ -60,15 +60,15 @@ export class TikzSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(t("Render TikZ code blocks with local TeX"))
+      .setName(t("Render LaTeX code blocks with local TeX"))
       .setDesc(t(
-        "Renders ```tikz blocks in your notes using the TeX installed on the system (MiKTeX/TeX Live). Supports ALL external libraries (pgfplots, circuitikz, tikz-cd, forest, etc.) that TikZJax cannot load. Rendering happens before the TikZJax plugin, so it takes precedence."
+        "Renders ```latex-vault blocks (and the legacy ```tikz, ```tikzcd, ```pgfplots) using the TeX installed on the system (MiKTeX/TeX Live). Any installed package works: TikZ, pgfplots, matrices, algorithms, code listings, math. Rendering happens before the TikZJax plugin, so it takes precedence."
       ))
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.tikzEnabled)
+          .setValue(this.plugin.settings.enabled)
           .onChange(async (value) => {
-            this.plugin.settings.tikzEnabled = value;
+            this.plugin.settings.enabled = value;
             await this.plugin.saveSettings();
           })
       );
@@ -80,9 +80,9 @@ export class TikzSettingTab extends PluginSettingTab {
       ))
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.tikzLivePreview)
+          .setValue(this.plugin.settings.livePreview)
           .onChange(async (value) => {
-            this.plugin.settings.tikzLivePreview = value;
+            this.plugin.settings.livePreview = value;
             await this.plugin.saveSettings();
           })
       );
@@ -97,9 +97,9 @@ export class TikzSettingTab extends PluginSettingTab {
           .addOption("auto", t("Auto (recommended)"))
           .addOption("pdf", t("pdflatex + dvisvgm (PDF)"))
           .addOption("dvi", t("latex + dvisvgm (DVI)"))
-          .setValue(this.plugin.settings.tikzEngine)
+          .setValue(this.plugin.settings.engine)
           .onChange(async (value) => {
-            this.plugin.settings.tikzEngine = value as TikzEngine;
+            this.plugin.settings.engine = value as LatexEngine;
             await this.plugin.saveSettings();
           })
       );
@@ -110,9 +110,9 @@ export class TikzSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setPlaceholder("(auto)")
-          .setValue(this.plugin.settings.tikzLatexBin)
+          .setValue(this.plugin.settings.latexBin)
           .onChange(async (value) => {
-            this.plugin.settings.tikzLatexBin = value.trim();
+            this.plugin.settings.latexBin = value.trim();
             await this.plugin.saveSettings();
           })
       );
@@ -123,9 +123,9 @@ export class TikzSettingTab extends PluginSettingTab {
       .addText((text) =>
         text
           .setPlaceholder("(auto)")
-          .setValue(this.plugin.settings.tikzDvisvgmBin)
+          .setValue(this.plugin.settings.dvisvgmBin)
           .onChange(async (value) => {
-            this.plugin.settings.tikzDvisvgmBin = value.trim();
+            this.plugin.settings.dvisvgmBin = value.trim();
             await this.plugin.saveSettings();
           })
       );
@@ -138,9 +138,9 @@ export class TikzSettingTab extends PluginSettingTab {
       .addTextArea((text) =>
         text
           .setPlaceholder("\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}")
-          .setValue(this.plugin.settings.tikzExtraPreamble)
+          .setValue(this.plugin.settings.extraPreamble)
           .onChange(async (value) => {
-            this.plugin.settings.tikzExtraPreamble = value;
+            this.plugin.settings.extraPreamble = value;
             await this.plugin.saveSettings();
           })
       );
@@ -152,28 +152,28 @@ export class TikzSettingTab extends PluginSettingTab {
       ))
       .addToggle((toggle) =>
         toggle
-          .setValue(this.plugin.settings.tikzShellEscape)
+          .setValue(this.plugin.settings.shellEscape)
           .onChange(async (value) => {
-            this.plugin.settings.tikzShellEscape = value;
+            this.plugin.settings.shellEscape = value;
             await this.plugin.saveSettings();
-            await this.plugin.tikzRenderer.clearCache();
+            await this.plugin.renderer.clearCache();
           })
       );
 
     new Setting(containerEl)
-      .setName(t("Test TikZ rendering"))
+      .setName(t("Test LaTeX rendering"))
       .setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration."))
       .addButton((btn) =>
         btn.setButtonText(t("Test")).onClick(async () => {
           btn.setDisabled(true);
           btn.setButtonText(t("Rendering..."));
           try {
-            await this.plugin.tikzRenderer.render(
+            await this.plugin.renderer.render(
               "\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}\n\\usepackage[siunitx]{circuitikz}\n\\usetikzlibrary{positioning, arrows.meta}\n\\begin{tikzpicture}\n\\draw (0,0) to[R=1k] (3,0);\n\\node[draw, right=1cm of {(3,0)}] (b) {OK};\n\\draw[-{Stealth}] (3,0) -- (b);\n\\end{tikzpicture}"
             );
-            new Notice(t("TikZ rendering succeeded: the TeX configuration works."));
+            new Notice(t("LaTeX rendering succeeded: the TeX configuration works."));
           } catch (e) {
-            new Notice(`${t("TikZ rendering error:")} ${(e as Error).message}`);
+            new Notice(`${t("LaTeX rendering error:")} ${(e as Error).message}`);
           } finally {
             btn.setDisabled(false);
             btn.setButtonText(t("Test"));
@@ -188,8 +188,8 @@ export class TikzSettingTab extends PluginSettingTab {
         btn.setButtonText(t("Clear")).onClick(async () => {
           btn.setDisabled(true);
           try {
-            await this.plugin.tikzRenderer.clearCache();
-            new Notice(t("TikZ cache cleared."));
+            await this.plugin.renderer.clearCache();
+            new Notice(t("LaTeX cache cleared."));
           } finally {
             btn.setDisabled(false);
           }

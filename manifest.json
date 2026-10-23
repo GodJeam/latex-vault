@@ -1,9 +1,9 @@
 {
-  "id": "tikz-vault",
-  "name": "TikZ Vault",
-  "version": "0.3.0",
+  "id": "latex-vault",
+  "name": "LaTeX Vault",
+  "version": "0.4.0",
   "minAppVersion": "1.5.0",
-  "description": "Rendering of TikZ/tikzcd/pgfplots code blocks in your vault using a local TeX installation (MiKTeX/TeX Live).",
+  "description": "Render LaTeX code blocks (TikZ, pgfplots, matrices, algorithms, code listings, math) to SVG using a local TeX installation (TeX Live/MiKTeX).",
   "author": "GodJeam",
   "isDesktopOnly": true
 }

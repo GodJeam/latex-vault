@@ -3,16 +3,16 @@ import { createHash } from "crypto";
 import { promises as fsp, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import type TikzVaultPlugin from "./main";
-import type { TikzSettings } from "./settings";
+import type LatexVaultPlugin from "./main";
+import type { LatexSettings } from "./settings";
 
 interface EngineBuild {
   label: string;
   build: (dir: string) => Promise<void>;
 }
 
-export class TikzRenderer {
-  private plugin: TikzVaultPlugin;
+export class LatexRenderer {
+  private plugin: LatexVaultPlugin;
   private cacheDir: string;
   private inFlight = new Map<string, Promise<string>>();
   // In-memory copy of already rendered SVGs: avoids re-reading the disk (and
@@ -20,15 +20,15 @@ export class TikzRenderer {
   private memo = new Map<string, string>();
   private binCache = new Map<string, string | null>();
 
-  constructor(plugin: TikzVaultPlugin) {
+  constructor(plugin: LatexVaultPlugin) {
     this.plugin = plugin;
-    this.cacheDir = join(tmpdir(), "tikz-vault-render");
+    this.cacheDir = join(tmpdir(), "latex-vault-render");
     mkdirSync(this.cacheDir, { recursive: true });
   }
 
   async render(code: string): Promise<string> {
     const s = this.plugin.settings;
-    const tex = this.buildTexSource(code, s.tikzExtraPreamble);
+    const tex = this.buildTexSource(code, s.extraPreamble);
     const hash = createHash("sha256").update(tex).digest("hex").slice(0, 32);
     const dir = join(this.cacheDir, hash);
     const svgFile = join(dir, "main.svg");
@@ -81,7 +81,7 @@ export class TikzRenderer {
     tex: string,
     dir: string,
     svgFile: string,
-    s: TikzSettings
+    s: LatexSettings
   ): Promise<string> {
     await fsp.mkdir(dir, { recursive: true });
     await fsp.writeFile(join(dir, "main.tex"), tex, "utf8");
@@ -91,7 +91,7 @@ export class TikzRenderer {
     const dvisvgm = this.resolveDvisvgm();
 
     const engines: EngineBuild[] = [];
-    if (s.tikzEngine !== "dvi" && latexPdf && dvisvgm) {
+    if (s.engine !== "dvi" && latexPdf && dvisvgm) {
       engines.push({
         label: "pdflatex + dvisvgm",
         build: async (d) => {
@@ -100,7 +100,7 @@ export class TikzRenderer {
         },
       });
     }
-    if (s.tikzEngine !== "pdf" && latexDvi && dvisvgm) {
+    if (s.engine !== "pdf" && latexDvi && dvisvgm) {
       engines.push({
         label: "latex + dvisvgm",
         build: async (d) => {
@@ -159,7 +159,7 @@ export class TikzRenderer {
   // (where MiKTeX is the common distribution).
   private latexArgs(): string[] {
     const args = ["--interaction=nonstopmode", "--halt-on-error"];
-    const shell = this.plugin.settings.tikzShellEscape;
+    const shell = this.plugin.settings.shellEscape;
     if (shell) args.push("--shell-escape");
     if (process.platform === "win32") {
       args.push(shell ? "--enable-write18" : "--disable-write18", "--enable-installer");
@@ -251,7 +251,7 @@ export class TikzRenderer {
 
   private buildTexSource(code: string, extraPreamble: string): string {
     const src = code.replace(/\r\n/g, "\n").trim();
-    if (!src) throw new Error("The TikZ block is empty.");
+    if (!src) throw new Error("The LaTeX block is empty.");
 
     if (/\\documentclass\s*[\[{]/.test(src)) {
       return src;
@@ -270,20 +270,29 @@ export class TikzRenderer {
     const { preamble, body: rawBody } = this.splitPreamble(src);
     let body = rawBody;
     let picture = true;
+    let float = false;
+
+    // Floats (algorithm, figure, table) cannot float in a standalone page:
+    // force the [H] placement and enable the class "float" option.
+    const floatMatch = body.match(/^\\begin\{(algorithm|figure|table)\}(\[[^\]]*\])?/);
+    if (floatMatch) {
+      float = true;
+      body = `\\begin{${floatMatch[1]}}[H]` + body.slice(floatMatch[0].length);
+    }
 
     const envMatch = body.match(/^\\begin\{([\w*-]+)\}/);
     if (envMatch) {
       const env = envMatch[1];
-      if (TikzRenderer.AXIS_ENVS.has(env)) {
+      if (LatexRenderer.AXIS_ENVS.has(env)) {
         // pgfplots axes must live inside a tikzpicture
         body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
-      } else if (!TikzRenderer.PICTURE_ENVS.has(env)) {
+      } else if (!LatexRenderer.PICTURE_ENVS.has(env)) {
         // matrices, algorithms, listings, align, ...: typeset as text
         picture = false;
       }
     } else if (/^\\tikz\s*[{\[]/.test(body)) {
       // inline \tikz command: leave as is
-    } else if (TikzRenderer.TIKZ_CMD.test(body)) {
+    } else if (LatexRenderer.TIKZ_CMD.test(body)) {
       body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
     } else {
       // plain math/text such as \[ ... \] or $...$
@@ -294,16 +303,25 @@ export class TikzRenderer {
     const has = (pkg: string) =>
       new RegExp(`\\\\(?:usepackage|RequirePackage)(?:\\[[^\\]]*\\])?\\{[^}]*\\b${pkg}\\b[^}]*\\}`).test(userPre);
 
-    const parts = [
-      picture ? "\\documentclass[border=5pt]{standalone}" : "\\documentclass[border=5pt,varwidth]{standalone}",
-    ];
+    const classOpts = ["border=5pt"];
+    if (!picture) classOpts.push("varwidth");
+    if (float) classOpts.push("float");
+    const parts = [`\\documentclass[${classOpts.join(",")}]{standalone}`];
     const add = (pkg: string, opts = "") => {
       if (!has(pkg)) parts.push(`\\usepackage${opts}{${pkg}}`);
     };
     add("amsmath");
     add("amssymb");
     add("tikz");
-    for (const [re, pkg] of TikzRenderer.AUTO_PACKAGES) {
+    if (float) {
+      if (/^\\begin\{algorithm\}/.test(body)) {
+        // algorithm2e provides its own float; otherwise use algorithm + algpseudocode
+        if (!has("algorithm2e")) add("algorithm");
+      } else {
+        add("float"); // [H] for figure/table
+      }
+    }
+    for (const [re, pkg] of LatexRenderer.AUTO_PACKAGES) {
       if (re.test(src)) add(pkg);
     }
     if (/(\\begin\{\w*axis\}|\\addplot)/.test(src) && !has("pgfplots")) {
@@ -424,13 +442,13 @@ export class TikzRenderer {
   }
 
   private resolveLatex(engine: "pdf" | "dvi"): string {
-    const cfg = this.plugin.settings.tikzLatexBin.trim();
+    const cfg = this.plugin.settings.latexBin.trim();
     if (cfg) return this.withExe(cfg);
     return this.findInPathCached(engine === "pdf" ? "pdflatex" : "latex") ?? "";
   }
 
   private resolveDvisvgm(): string {
-    const cfg = this.plugin.settings.tikzDvisvgmBin.trim();
+    const cfg = this.plugin.settings.dvisvgmBin.trim();
     if (cfg) return this.withExe(cfg);
     return this.findInPathCached("dvisvgm") ?? "";
   }

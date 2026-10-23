@@ -1,13 +1,13 @@
 {
-  "name": "tikz-vault",
-  "version": "0.3.0",
-  "description": "TikZ rendering for Obsidian using a local TeX installation",
+  "name": "latex-vault",
+  "version": "0.4.0",
+  "description": "LaTeX rendering for Obsidian using a local TeX installation",
   "main": "main.js",
   "scripts": {
     "dev": "node build/esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck -p build/tsconfig.json && node build/esbuild.config.mjs production"
   },
-  "keywords": ["obsidian", "tikz", "latex", "svg"],
+  "keywords": ["obsidian", "latex", "tikz", "pgfplots", "svg"],
   "license": "GPL-3.0",
   "devDependencies": {
     "@codemirror/language": "^6.12.4",

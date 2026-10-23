@@ -1,31 +1,31 @@
-/* ====== Rendering TikZ ====== */
+/* ====== LaTeX Vault ====== */
 
-@keyframes tikz-spin {
+@keyframes latex-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-.tikz-figure {
+.latex-figure {
   width: 100%;
   overflow-x: auto;
   text-align: center;
 }
 
-.tikz-figure svg {
+.latex-figure svg {
   max-width: 100%;
   height: auto;
   display: block;
   margin: 0 auto;
 }
 
-.tikz-status {
+.latex-status {
   color: var(--text-muted);
   font-size: var(--font-smaller);
   font-style: italic;
 }
 
-.tikz-loading::before {
+.latex-loading::before {
   content: "";
   display: inline-block;
   width: 10px;
@@ -35,25 +35,26 @@
   border-top-color: transparent;
   border-radius: 50%;
   vertical-align: middle;
-  animation: tikz-spin 0.8s linear infinite;
+  animation: latex-spin 0.8s linear infinite;
 }
 
-/* In Edit mode the TikZ code fence is hidden; the rendered image is shown and
+/* In Edit mode the LaTeX code fence is hidden; the rendered image is shown and
    the source code is available behind a closed toggle. */
-.cm-line.tikz-code-hidden {
+.cm-line.latex-code-hidden {
   display: none !important;
 }
 
-/* Hide Code Styler's header for TikZ blocks (its fold toggle cannot be
+/* Hide Code Styler's header for LaTeX blocks (its fold toggle cannot be
    driven from another plugin and would appear "open" while the code is
    hidden). */
+.code-styler-header-container.language-latex-vault,
 .code-styler-header-container.language-tikz,
 .code-styler-header-container.language-tikzcd,
 .code-styler-header-container.language-pgfplots {
   display: none !important;
 }
 
-.tikz-live .tikz-source-toggle {
+.latex-live .latex-source-toggle {
   align-self: center;
   margin-top: 6px;
   padding: 2px 12px;
@@ -66,12 +67,12 @@
   line-height: normal;
 }
 
-.tikz-live .tikz-source-toggle:hover {
+.latex-live .latex-source-toggle:hover {
   color: var(--interactive-accent);
   border-color: var(--interactive-accent);
 }
 
-.tikz-live {
+.latex-live {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -86,7 +87,7 @@
 }
 
 /* Contenitore in modalità Lettura (sostituisce il blocco di codice) */
-.tikz-result {
+.latex-result {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -101,14 +102,14 @@
   border-radius: var(--radius-s);
 }
 
-.tikz-result .tikz-figure {
+.latex-result .latex-figure {
   width: 100%;
   overflow-x: auto;
   text-align: center;
   line-height: 0;
 }
 
-.tikz-result .tikz-figure svg {
+.latex-result .latex-figure svg {
   max-width: 100%;
   height: auto;
   display: block;
@@ -120,39 +121,41 @@
   display: none !important;
 }
 
-/* Nasconde l'immagine rotta che Obsidian mostra per i blocchi tikz non riconosciuti */
+/* Hide the broken image Obsidian shows for unrecognised latex-vault/tikz blocks */
+.block-language-latex-vault img[src*="invalid.site"],
+.block-language-latex-vault img[src*="img-not-found"],
 .block-language-tikz img[src*="invalid.site"],
 .block-language-tikz img[src*="img-not-found"] {
   display: none !important;
 }
 
-.tikz-live .tikz-figure {
+.latex-live .latex-figure {
   overflow-x: auto;
   text-align: center;
   line-height: 0;
 }
 
-.tikz-live .tikz-figure svg {
+.latex-live .latex-figure svg {
   max-width: 100%;
   height: auto;
   display: block;
   margin: 0 auto;
 }
 
-/* Error styling is shared by Reading and Edit mode (see .tikz-error below). */
+/* Error styling is shared by Reading and Edit mode (see .latex-error below). */
 
-.tikz-error {
+.latex-error {
   width: 100%;
   color: var(--text-error);
   font-size: var(--font-smaller);
 }
 
-.tikz-error-title {
+.latex-error-title {
   font-weight: 600;
   margin-bottom: 4px;
 }
 
-.tikz-error-msg {
+.latex-error-msg {
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 200px;
