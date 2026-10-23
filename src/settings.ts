@@ -12,6 +12,7 @@ export interface TikzSettings {
   tikzDvisvgmBin: string;
   tikzExtraPreamble: string;
   tikzLivePreview: boolean;
+  tikzShellEscape: boolean;
 }
 
 export const DEFAULT_SETTINGS: TikzSettings = {
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: TikzSettings = {
   tikzDvisvgmBin: "",
   tikzExtraPreamble: "",
   tikzLivePreview: true,
+  tikzShellEscape: false,
 };
 
 export class TikzSettingTab extends PluginSettingTab {
@@ -140,6 +142,21 @@ export class TikzSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.tikzExtraPreamble = value;
             await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t("Enable shell-escape"))
+      .setDesc(t(
+        "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults."
+      ))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.tikzShellEscape)
+          .onChange(async (value) => {
+            this.plugin.settings.tikzShellEscape = value;
+            await this.plugin.saveSettings();
+            await this.plugin.tikzRenderer.clearCache();
           })
       );
 

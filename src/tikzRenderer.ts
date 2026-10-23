@@ -159,7 +159,11 @@ export class TikzRenderer {
   // (where MiKTeX is the common distribution).
   private latexArgs(): string[] {
     const args = ["--interaction=nonstopmode", "--halt-on-error"];
-    if (process.platform === "win32") args.push("--disable-write18", "--enable-installer");
+    const shell = this.plugin.settings.tikzShellEscape;
+    if (shell) args.push("--shell-escape");
+    if (process.platform === "win32") {
+      args.push(shell ? "--enable-write18" : "--disable-write18", "--enable-installer");
+    }
     args.push("main.tex");
     return args;
   }
@@ -249,7 +253,7 @@ export class TikzRenderer {
     const src = code.replace(/\r\n/g, "\n").trim();
     if (!src) throw new Error("The TikZ block is empty.");
 
-    if (/\\documentclass\s*\{/.test(src)) {
+    if (/\\documentclass\s*[\[{]/.test(src)) {
       return src;
     }
 
@@ -257,38 +261,113 @@ export class TikzRenderer {
     // again: only prepend the missing class/packages.
     if (/\\begin\{document\}/.test(src)) {
       const head = ["\\documentclass[border=5pt]{standalone}"];
-      if (!/\\usepackage(?:\[[^\]]*\])?\{tikz\}/.test(src)) head.push("\\usepackage{tikz}");
+      if (!/\\usepackage(?:\[[^\]]*\])?\{[^}]*\btikz\b[^}]*\}/.test(src)) head.push("\\usepackage{tikz}");
       const extraDoc = extraPreamble.trim();
       if (extraDoc) head.push(extraDoc);
       return head.join("\n") + "\n" + src;
     }
 
-    const envMatch = src.match(/\\begin\{(\w+)\}/);
-    let preamble = "";
-    let body = src;
-    if (envMatch && envMatch.index !== undefined) {
-      preamble = src.slice(0, envMatch.index).trim();
-      body = src.slice(envMatch.index).trim();
+    const { preamble, body: rawBody } = this.splitPreamble(src);
+    let body = rawBody;
+    let picture = true;
+
+    const envMatch = body.match(/^\\begin\{([\w*-]+)\}/);
+    if (envMatch) {
       const env = envMatch[1];
-      if (env !== "tikzpicture" && env !== "tikzcd") {
-        // environments like "axis": wrap them in a tikzpicture
+      if (TikzRenderer.AXIS_ENVS.has(env)) {
+        // pgfplots axes must live inside a tikzpicture
         body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
+      } else if (!TikzRenderer.PICTURE_ENVS.has(env)) {
+        // matrices, algorithms, listings, align, ...: typeset as text
+        picture = false;
       }
-    } else if (!/\\tikz\s*[{\[]/.test(src)) {
-      body = "\\begin{tikzpicture}\n" + src + "\n\\end{tikzpicture}";
+    } else if (/^\\tikz\s*[{\[]/.test(body)) {
+      // inline \tikz command: leave as is
+    } else if (TikzRenderer.TIKZ_CMD.test(body)) {
+      body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
+    } else {
+      // plain math/text such as \[ ... \] or $...$
+      picture = false;
     }
 
-    const parts = ["\\documentclass[border=5pt]{standalone}", "\\usepackage{tikz}"];
-    if (/\\begin\{tikzcd\}/.test(src)) parts.push("\\usepackage{tikz-cd}");
-    if (/(\\begin\{axis\}|\\addplot)/.test(src)) {
+    const userPre = preamble + "\n" + extraPreamble;
+    const has = (pkg: string) =>
+      new RegExp(`\\\\(?:usepackage|RequirePackage)(?:\\[[^\\]]*\\])?\\{[^}]*\\b${pkg}\\b[^}]*\\}`).test(userPre);
+
+    const parts = [
+      picture ? "\\documentclass[border=5pt]{standalone}" : "\\documentclass[border=5pt,varwidth]{standalone}",
+    ];
+    const add = (pkg: string, opts = "") => {
+      if (!has(pkg)) parts.push(`\\usepackage${opts}{${pkg}}`);
+    };
+    add("amsmath");
+    add("amssymb");
+    add("tikz");
+    for (const [re, pkg] of TikzRenderer.AUTO_PACKAGES) {
+      if (re.test(src)) add(pkg);
+    }
+    if (/(\\begin\{\w*axis\}|\\addplot)/.test(src) && !has("pgfplots")) {
       parts.push("\\usepackage{pgfplots}", "\\pgfplotsset{compat=1.18}");
     }
-    if (/\\begin\{forest\}/.test(src)) parts.push("\\usepackage{forest}");
     const extra = extraPreamble.trim();
     if (extra) parts.push(extra);
     if (preamble) parts.push(preamble);
     parts.push("\\begin{document}", body, "\\end{document}");
     return parts.join("\n");
+  }
+
+  // Environments that produce a picture on their own and must NOT be nested in
+  // another tikzpicture.
+  private static PICTURE_ENVS = new Set([
+    "tikzpicture", "tikzcd", "forest", "circuitikz", "quantikz", "karnaugh-map",
+    "bytefield", "scope",
+  ]);
+
+  // pgfplots environments that need a surrounding tikzpicture.
+  private static AXIS_ENVS = new Set([
+    "axis", "semilogxaxis", "semilogyaxis", "loglogaxis", "polaraxis",
+    "groupplot", "ternaryaxis", "smithchart",
+  ]);
+
+  // Bare TikZ drawing commands (block without any environment).
+  private static TIKZ_CMD = /^\\(draw|node|path|fill|filldraw|shade|shadedraw|coordinate|foreach|matrix|pic|clip|graph|useasboundingbox|begin\{scope\}|tikzset)\b/;
+
+  // Packages loaded automatically when their environments/commands appear.
+  private static AUTO_PACKAGES: [RegExp, string][] = [
+    [/\\begin\{tikzcd\}/, "tikz-cd"],
+    [/\\begin\{forest\}/, "forest"],
+    [/\\begin\{circuitikz\}/, "circuitikz"],
+    [/\\begin\{quantikz\}/, "quantikz"],
+    [/\\begin\{karnaugh-map\}/, "karnaugh-map"],
+    [/\\begin\{bytefield\}/, "bytefield"],
+    [/\\begin\{[pbBvV]?Nice(Matrix|Array|Tabular)\}/, "nicematrix"],
+    [/\\begin\{blockarray\}/, "blkarray"],
+    [/\\begin\{algorithmic\}/, "algpseudocode"],
+    [/\\begin\{lstlisting\}|\\lstinline/, "listings"],
+    [/\\begin\{minted\}|\\mintinline/, "minted"],
+    [/\\begin\{tcolorbox\}/, "tcolorbox"],
+    [/\\(dv|pdv|bra|ket|braket)\b/, "physics"],
+    [/\\(mathclap|coloneqq|xrightarrow|prescript|DeclarePairedDelimiter)\b/, "mathtools"],
+    [/\\cancel(to)?\b/, "cancel"],
+    [/\\(SI|si|num|unit)\{/, "siunitx"],
+  ];
+
+  // Leading lines made of preamble-only commands (packages, libraries, macro
+  // definitions, comments) become the preamble; the rest is the body.
+  private splitPreamble(src: string): { preamble: string; body: string } {
+    const lines = src.split("\n");
+    const pre = /^\s*(%.*|\\(usepackage|RequirePackage|usetikzlibrary|usepgfplotslibrary|usepgflibrary|pgfplotsset|tikzset|ctikzset|newcommand|renewcommand|providecommand|NewDocumentCommand|DeclareMathOperator|DeclarePairedDelimiter|def|let|definecolor|colorlet|lstset|lstdefinestyle|lstdefinelanguage|setminted|usemintedstyle|tcbuselibrary|tcbset|forestset|sisetup|NiceMatrixOptions|algrenewcommand|algnewcommand|algdef|newtheorem|tikzcdset|usetkzobj|tkzSetUpPoint)\b.*)?$/;
+    let i = 0;
+    let depth = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (depth === 0 && !pre.test(line)) break;
+      // keep multi-line definitions (unbalanced braces) in the preamble
+      depth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+      if (depth < 0) depth = 0;
+      i++;
+    }
+    return { preamble: lines.slice(0, i).join("\n").trim(), body: lines.slice(i).join("\n").trim() };
   }
 
   private cleanSvg(svg: string): string {
@@ -316,7 +395,9 @@ export class TikzRenderer {
       const strokeOp = attr(tag, "stroke-opacity");
       const fillOp = attr(tag, "fill-opacity");
       const strokeVisible = stroke !== undefined && stroke !== "" && stroke !== "none" && strokeOp !== "0";
-      const fillVisible = fill !== undefined && fill !== "" && fill !== "none" && fillOp !== "0";
+      // A path without a fill attribute is filled black by default (this is how
+      // dvisvgm emits text glyphs with --no-fonts), so it counts as visible.
+      const fillVisible = fill !== "" && fill !== "none" && fillOp !== "0";
       if (strokeVisible || fillVisible) {
         visible = true;
         break;

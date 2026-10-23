@@ -10,6 +10,8 @@ An **Obsidian** plugin that renders TikZ code blocks (```tikz, ```tikzcd, ```pgf
 - Supports **any LaTeX package** (pgfplots, circuitikz, tikz-cd, forest, ...), unlike TikZJax.
 - Automatic `pdflatex + dvisvgm` / `latex + dvisvgm` fallback, with disk caching.
 - In Edit mode the code stays available behind a closed "Show TikZ code" toggle.
+- Smart wrapping: bare TikZ commands and pgfplots axes are wrapped in a `tikzpicture`, while self-contained environments (`forest`, `circuitikz`, `quantikz`, `karnaugh-map`, `bytefield`) and non-picture content (matrices, algorithms, code listings, math) are typeset as-is.
+- Optional **shell-escape** (off by default) for packages that run external tools.
 
 ## Requirements
 
@@ -58,7 +60,46 @@ Wrap TikZ code in a fenced block:
 ```
 ````
 
-The diagram is rendered automatically. In the plugin settings you can configure the engine, binary paths, an extra preamble, and the interface language (English by default, Italian optional). Use the **Test** button to verify your TeX configuration.
+Blocks are not limited to diagrams: matrices, pseudocode, code listings and formulas work too:
+
+````markdown
+```tikz
+$\begin{pNiceMatrix} 1 & 2 \\ 3 & 4 \end{pNiceMatrix}$
+```
+
+```tikz
+\begin{algorithmic}
+\For{$i = 1$ to $n$}
+  \State $s \gets s + a_i$
+\EndFor
+\end{algorithmic}
+```
+````
+
+### Preamble and packages
+
+Leading lines with preamble commands (`\usepackage`, `\usetikzlibrary`, `\newcommand`, `\lstset`, ...) are moved to the preamble. A block containing `\documentclass` is compiled verbatim; one containing `\begin{document}` only gets the missing class and `tikz`.
+
+`tikz`, `amsmath` and `amssymb` are always loaded. These packages are loaded automatically when their environments/commands are detected (unless you load them yourself):
+
+| Detected | Package |
+|---|---|
+| `tikzcd` | `tikz-cd` |
+| `axis` (any pgfplots axis), `\addplot` | `pgfplots` (`compat=1.18`) |
+| `forest` / `circuitikz` / `quantikz` | `forest` / `circuitikz` / `quantikz` |
+| `karnaugh-map` / `bytefield` | `karnaugh-map` / `bytefield` |
+| `pNiceMatrix`, `NiceArray`, ... / `blockarray` | `nicematrix` / `blkarray` |
+| `algorithmic` | `algpseudocode` |
+| `lstlisting` / `minted` / `tcolorbox` | `listings` / `minted` / `tcolorbox` |
+| `\dv`, `\pdv`, `\bra`, `\ket` | `physics` |
+| `\coloneqq`, `\mathclap`, ... | `mathtools` |
+| `\cancel` / `\SI`, `\num`, ... | `cancel` / `siunitx` |
+
+Any other installed package can be loaded with `\usepackage` in the block or in the **Extra preamble** setting. A full TeX installation (e.g. `texlive-scheme-full`) avoids missing-package errors.
+
+> **minted**: recent TeX Live versions run it in restricted mode. If yours does not, enable **shell-escape** in the settings — only for trusted vaults, since it lets code blocks execute commands.
+
+The diagram is rendered automatically. In the plugin settings you can configure the engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to verify your TeX configuration.
 
 ## Structure
 

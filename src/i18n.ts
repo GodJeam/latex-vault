@@ -33,6 +33,9 @@ const IT: Record<string, string> = {
   "Extra preamble": "Preambolo aggiuntivo",
   "Lines to add to the preamble of every rendering. Useful to load frequently used libraries, e.g. \\usepackage{pgfplots} or \\usetikzlibrary{positioning, arrows.meta}.":
     "Linee da aggiungere al preambolo di ogni rendering. Utile per caricare librerie usate di frequente, es. \\usepackage{pgfplots} oppure \\usetikzlibrary{positioning, arrows.meta}.",
+  "Enable shell-escape": "Abilita shell-escape",
+  "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults.":
+    "Necessario per pacchetti che eseguono programmi esterni, come minted (richiede Pygments). Rischio di sicurezza: i blocchi di codice possono eseguire comandi sul sistema. Abilitalo solo per vault fidati.",
   "Test TikZ rendering": "Testa rendering TikZ",
   "Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.":
     "Esegue un diagramma di prova con pgfplots, circuitikz e librerie per verificare la configurazione.",

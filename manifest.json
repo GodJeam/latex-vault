@@ -1,7 +1,7 @@
 {
   "id": "tikz-vault",
   "name": "TikZ Vault",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.5.0",
   "description": "Rendering of TikZ/tikzcd/pgfplots code blocks in your vault using a local TeX installation (MiKTeX/TeX Live).",
   "author": "GodJeam",

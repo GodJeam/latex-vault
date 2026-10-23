@@ -1,6 +1,6 @@
 {
   "name": "tikz-vault",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TikZ rendering for Obsidian using a local TeX installation",
   "main": "main.js",
   "scripts": {

@@ -32,7 +32,7 @@ var import_crypto = require("crypto");
 var import_fs = require("fs");
 var import_os = require("os");
 var import_path = require("path");
-var TikzRenderer = class {
+var _TikzRenderer = class _TikzRenderer {
   constructor(plugin) {
     __publicField(this, "plugin");
     __publicField(this, "cacheDir");
@@ -153,7 +153,11 @@ var TikzRenderer = class {
   // (where MiKTeX is the common distribution).
   latexArgs() {
     const args = ["--interaction=nonstopmode", "--halt-on-error"];
-    if (process.platform === "win32") args.push("--disable-write18", "--enable-installer");
+    const shell = this.plugin.settings.tikzShellEscape;
+    if (shell) args.push("--shell-escape");
+    if (process.platform === "win32") {
+      args.push(shell ? "--enable-write18" : "--disable-write18", "--enable-installer");
+    }
     args.push("main.tex");
     return args;
   }
@@ -230,40 +234,71 @@ var TikzRenderer = class {
   buildTexSource(code, extraPreamble) {
     const src = code.replace(/\r\n/g, "\n").trim();
     if (!src) throw new Error("The TikZ block is empty.");
-    if (/\\documentclass\s*\{/.test(src)) {
+    if (/\\documentclass\s*[\[{]/.test(src)) {
       return src;
     }
     if (/\\begin\{document\}/.test(src)) {
       const head = ["\\documentclass[border=5pt]{standalone}"];
-      if (!/\\usepackage(?:\[[^\]]*\])?\{tikz\}/.test(src)) head.push("\\usepackage{tikz}");
+      if (!/\\usepackage(?:\[[^\]]*\])?\{[^}]*\btikz\b[^}]*\}/.test(src)) head.push("\\usepackage{tikz}");
       const extraDoc = extraPreamble.trim();
       if (extraDoc) head.push(extraDoc);
       return head.join("\n") + "\n" + src;
     }
-    const envMatch = src.match(/\\begin\{(\w+)\}/);
-    let preamble = "";
-    let body = src;
-    if (envMatch && envMatch.index !== void 0) {
-      preamble = src.slice(0, envMatch.index).trim();
-      body = src.slice(envMatch.index).trim();
+    const { preamble, body: rawBody } = this.splitPreamble(src);
+    let body = rawBody;
+    let picture = true;
+    const envMatch = body.match(/^\\begin\{([\w*-]+)\}/);
+    if (envMatch) {
       const env = envMatch[1];
-      if (env !== "tikzpicture" && env !== "tikzcd") {
+      if (_TikzRenderer.AXIS_ENVS.has(env)) {
         body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
+      } else if (!_TikzRenderer.PICTURE_ENVS.has(env)) {
+        picture = false;
       }
-    } else if (!/\\tikz\s*[{\[]/.test(src)) {
-      body = "\\begin{tikzpicture}\n" + src + "\n\\end{tikzpicture}";
+    } else if (/^\\tikz\s*[{\[]/.test(body)) {
+    } else if (_TikzRenderer.TIKZ_CMD.test(body)) {
+      body = "\\begin{tikzpicture}\n" + body + "\n\\end{tikzpicture}";
+    } else {
+      picture = false;
     }
-    const parts = ["\\documentclass[border=5pt]{standalone}", "\\usepackage{tikz}"];
-    if (/\\begin\{tikzcd\}/.test(src)) parts.push("\\usepackage{tikz-cd}");
-    if (/(\\begin\{axis\}|\\addplot)/.test(src)) {
+    const userPre = preamble + "\n" + extraPreamble;
+    const has = (pkg) => new RegExp(`\\\\(?:usepackage|RequirePackage)(?:\\[[^\\]]*\\])?\\{[^}]*\\b${pkg}\\b[^}]*\\}`).test(userPre);
+    const parts = [
+      picture ? "\\documentclass[border=5pt]{standalone}" : "\\documentclass[border=5pt,varwidth]{standalone}"
+    ];
+    const add = (pkg, opts = "") => {
+      if (!has(pkg)) parts.push(`\\usepackage${opts}{${pkg}}`);
+    };
+    add("amsmath");
+    add("amssymb");
+    add("tikz");
+    for (const [re, pkg] of _TikzRenderer.AUTO_PACKAGES) {
+      if (re.test(src)) add(pkg);
+    }
+    if (/(\\begin\{\w*axis\}|\\addplot)/.test(src) && !has("pgfplots")) {
       parts.push("\\usepackage{pgfplots}", "\\pgfplotsset{compat=1.18}");
     }
-    if (/\\begin\{forest\}/.test(src)) parts.push("\\usepackage{forest}");
     const extra = extraPreamble.trim();
     if (extra) parts.push(extra);
     if (preamble) parts.push(preamble);
     parts.push("\\begin{document}", body, "\\end{document}");
     return parts.join("\n");
+  }
+  // Leading lines made of preamble-only commands (packages, libraries, macro
+  // definitions, comments) become the preamble; the rest is the body.
+  splitPreamble(src) {
+    const lines = src.split("\n");
+    const pre = /^\s*(%.*|\\(usepackage|RequirePackage|usetikzlibrary|usepgfplotslibrary|usepgflibrary|pgfplotsset|tikzset|ctikzset|newcommand|renewcommand|providecommand|NewDocumentCommand|DeclareMathOperator|DeclarePairedDelimiter|def|let|definecolor|colorlet|lstset|lstdefinestyle|lstdefinelanguage|setminted|usemintedstyle|tcbuselibrary|tcbset|forestset|sisetup|NiceMatrixOptions|algrenewcommand|algnewcommand|algdef|newtheorem|tikzcdset|usetkzobj|tkzSetUpPoint)\b.*)?$/;
+    let i = 0;
+    let depth = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (depth === 0 && !pre.test(line)) break;
+      depth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+      if (depth < 0) depth = 0;
+      i++;
+    }
+    return { preamble: lines.slice(0, i).join("\n").trim(), body: lines.slice(i).join("\n").trim() };
   }
   cleanSvg(svg) {
     return svg.replace(/^\s*<\?xml[^>]*\?>\s*/, "").replace(/^(?:\s*<!--[\s\S]*?-->\s*)+/, "").trim();
@@ -286,7 +321,7 @@ var TikzRenderer = class {
       const strokeOp = attr(tag, "stroke-opacity");
       const fillOp = attr(tag, "fill-opacity");
       const strokeVisible = stroke !== void 0 && stroke !== "" && stroke !== "none" && strokeOp !== "0";
-      const fillVisible = fill !== void 0 && fill !== "" && fill !== "none" && fillOp !== "0";
+      const fillVisible = fill !== "" && fill !== "none" && fillOp !== "0";
       if (strokeVisible || fillVisible) {
         visible = true;
         break;
@@ -382,6 +417,51 @@ ${tail}` : "");
     });
   }
 };
+// Environments that produce a picture on their own and must NOT be nested in
+// another tikzpicture.
+__publicField(_TikzRenderer, "PICTURE_ENVS", /* @__PURE__ */ new Set([
+  "tikzpicture",
+  "tikzcd",
+  "forest",
+  "circuitikz",
+  "quantikz",
+  "karnaugh-map",
+  "bytefield",
+  "scope"
+]));
+// pgfplots environments that need a surrounding tikzpicture.
+__publicField(_TikzRenderer, "AXIS_ENVS", /* @__PURE__ */ new Set([
+  "axis",
+  "semilogxaxis",
+  "semilogyaxis",
+  "loglogaxis",
+  "polaraxis",
+  "groupplot",
+  "ternaryaxis",
+  "smithchart"
+]));
+// Bare TikZ drawing commands (block without any environment).
+__publicField(_TikzRenderer, "TIKZ_CMD", /^\\(draw|node|path|fill|filldraw|shade|shadedraw|coordinate|foreach|matrix|pic|clip|graph|useasboundingbox|begin\{scope\}|tikzset)\b/);
+// Packages loaded automatically when their environments/commands appear.
+__publicField(_TikzRenderer, "AUTO_PACKAGES", [
+  [/\\begin\{tikzcd\}/, "tikz-cd"],
+  [/\\begin\{forest\}/, "forest"],
+  [/\\begin\{circuitikz\}/, "circuitikz"],
+  [/\\begin\{quantikz\}/, "quantikz"],
+  [/\\begin\{karnaugh-map\}/, "karnaugh-map"],
+  [/\\begin\{bytefield\}/, "bytefield"],
+  [/\\begin\{[pbBvV]?Nice(Matrix|Array|Tabular)\}/, "nicematrix"],
+  [/\\begin\{blockarray\}/, "blkarray"],
+  [/\\begin\{algorithmic\}/, "algpseudocode"],
+  [/\\begin\{lstlisting\}|\\lstinline/, "listings"],
+  [/\\begin\{minted\}|\\mintinline/, "minted"],
+  [/\\begin\{tcolorbox\}/, "tcolorbox"],
+  [/\\(dv|pdv|bra|ket|braket)\b/, "physics"],
+  [/\\(mathclap|coloneqq|xrightarrow|prescript|DeclarePairedDelimiter)\b/, "mathtools"],
+  [/\\cancel(to)?\b/, "cancel"],
+  [/\\(SI|si|num|unit)\{/, "siunitx"]
+]);
+var TikzRenderer = _TikzRenderer;
 
 // src/tikzPreview.ts
 var import_state = require("@codemirror/state");
@@ -555,7 +635,8 @@ var DEFAULT_SETTINGS = {
   tikzLatexBin: "",
   tikzDvisvgmBin: "",
   tikzExtraPreamble: "",
-  tikzLivePreview: true
+  tikzLivePreview: true,
+  tikzShellEscape: false
 };
 var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
@@ -622,6 +703,15 @@ var TikzSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian2.Setting(containerEl).setName(t("Enable shell-escape")).setDesc(t(
+      "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults."
+    )).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.tikzShellEscape).onChange(async (value) => {
+        this.plugin.settings.tikzShellEscape = value;
+        await this.plugin.saveSettings();
+        await this.plugin.tikzRenderer.clearCache();
+      })
+    );
     new import_obsidian2.Setting(containerEl).setName(t("Test TikZ rendering")).setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.")).addButton(
       (btn) => btn.setButtonText(t("Test")).onClick(async () => {
         btn.setDisabled(true);
@@ -676,6 +766,8 @@ var IT = {
   "Leave empty for automatic lookup in the PATH (recommended).": "Lascia vuoto per la ricerca automatica nel PATH (consigliato).",
   "Extra preamble": "Preambolo aggiuntivo",
   "Lines to add to the preamble of every rendering. Useful to load frequently used libraries, e.g. \\usepackage{pgfplots} or \\usetikzlibrary{positioning, arrows.meta}.": "Linee da aggiungere al preambolo di ogni rendering. Utile per caricare librerie usate di frequente, es. \\usepackage{pgfplots} oppure \\usetikzlibrary{positioning, arrows.meta}.",
+  "Enable shell-escape": "Abilita shell-escape",
+  "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults.": "Necessario per pacchetti che eseguono programmi esterni, come minted (richiede Pygments). Rischio di sicurezza: i blocchi di codice possono eseguire comandi sul sistema. Abilitalo solo per vault fidati.",
   "Test TikZ rendering": "Testa rendering TikZ",
   "Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.": "Esegue un diagramma di prova con pgfplots, circuitikz e librerie per verificare la configurazione.",
   "Test": "Test",
