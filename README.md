@@ -4,8 +4,6 @@ An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **lo
 
 > Formerly **TikZ Vault** (`tikz-vault`). See [Migrating from TikZ Vault](#migrating-from-tikz-vault).
 
-> **Note**: this project was entirely generated using large language models (LLMs) via opencode. The code received **little personal review**: use it with due caution, test it, and report or fix any issues you find.
-
 ## Features
 
 - Renders ```latex-vault blocks (plus the legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading and Edit mode.
@@ -29,6 +27,13 @@ An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **lo
 For the build you also need **Node.js**.
 
 ## Installation
+
+### From Obsidian Community Plugins (Recommended)
+
+1. Open **Settings → Community plugins → Browse** in Obsidian.
+2. Search for **LaTeX Vault**, click **Install**, and then **Enable**.
+
+### From Source
 
 1. Clone the repo and build:
 

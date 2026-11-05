@@ -7,14 +7,19 @@
     "dev": "node build/esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck -p build/tsconfig.json && node build/esbuild.config.mjs production"
   },
-  "keywords": ["obsidian", "latex", "tikz", "pgfplots", "svg"],
+  "keywords": [
+    "obsidian",
+    "latex",
+    "tikz",
+    "pgfplots",
+    "svg"
+  ],
   "license": "GPL-3.0",
   "devDependencies": {
     "@codemirror/language": "^6.12.4",
     "@lezer/common": "^1.5.2",
     "@types/node": "^20.11.0",
-    "builtin-modules": "^3.3.0",
-    "esbuild": "^0.21.5",
+    "esbuild": "^0.25.12",
     "obsidian": "^1.5.7",
     "typescript": "^5.4.5"
   }
