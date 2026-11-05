@@ -2,11 +2,9 @@
 
 An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **local TeX installation** (MiKTeX / TeX Live), producing SVG images: TikZ diagrams, pgfplots, matrices, algorithms, code listings, math — with **any installed package**, including the ones TikZJax cannot load.
 
-> Formerly **TikZ Vault** (`tikz-vault`). See [Migrating from TikZ Vault](#migrating-from-tikz-vault).
-
 ## Features
 
-- Renders ```latex-vault blocks (plus the legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading and Edit mode.
+- Renders ```latex-vault blocks (plus legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading and Edit mode.
 - Supports **any LaTeX package** (pgfplots, circuitikz, tikz-cd, forest, nicematrix, algorithmicx, listings, ...), unlike TikZJax.
 - Automatic `pdflatex + dvisvgm` / `latex + dvisvgm` fallback, with disk caching.
 - In Edit mode the code stays available behind a closed "Show LaTeX code" toggle.
@@ -111,12 +109,6 @@ Any other installed package can be loaded with `\usepackage` in the block or in 
 The ```latex-vault tag is dedicated to the plugin, so Obsidian's ```latex syntax highlighting keeps working for code you only want to show. The ```tikz, ```tikzcd and ```pgfplots tags still work for existing notes.
 
 In the plugin settings you can configure the engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to verify your TeX configuration.
-
-## Migrating from TikZ Vault
-
-1. Install LaTeX Vault in `<vault>/.obsidian/plugins/latex-vault/` and enable it.
-2. Disable and delete the old **TikZ Vault** plugin (`plugins/tikz-vault/`) — both plugins render ```tikz blocks.
-3. Settings are imported automatically from the old plugin on first load (as long as its `data.json` still exists), and existing ```tikz blocks keep working.
 
 ## Structure
 
