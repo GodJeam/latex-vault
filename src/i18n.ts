@@ -2,7 +2,7 @@ export type Language = "en" | "it";
 
 // English is the default and is used inline in the code. This map provides
 // the Italian translations for the optional "it" language setting.
-const IT: Record<string, string> = {
+export const IT_TRANSLATIONS: Record<string, string> = {
   "Language": "Lingua",
   "Interface language. English is the default. Some command names update after reloading Obsidian.":
     "Lingua dell'interfaccia. L'inglese è il default. Alcuni nomi dei comandi si aggiornano dopo il ricaricamento di Obsidian.",
@@ -58,6 +58,6 @@ const IT: Record<string, string> = {
 };
 
 export function translate(lang: Language, text: string): string {
-  if (lang === "it") return IT[text] ?? text;
+  if (lang === "it") return IT_TRANSLATIONS[text] ?? text;
   return text;
 }

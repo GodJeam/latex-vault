@@ -717,7 +717,7 @@ export class LatexRenderer {
             // looks valid but nothing is visible. Treat it as a failure and let
             // the next engine (DVI) try instead.
             throw new Error(
-              `dvisvgm produced an empty SVG (all strokes/fills are transparent) — engine ${engine.label}`
+              `dvisvgm produced an empty SVG (all strokes/fills are transparent, engine ${engine.label})`
             );
           }
           const cleaned = cleanSvg(svg);
@@ -762,9 +762,12 @@ export class LatexRenderer {
       return true;
     }
     const detected = await new Promise<boolean>((resolve) => {
+      const isJs = process.platform === "win32" && /\.(m?js|cjs)$/i.test(bin);
+      const spawnBin = isJs ? process.execPath : bin;
+      const spawnArgs = isJs ? [bin, "--version"] : ["--version"];
       execFile(
-        bin,
-        ["--version"],
+        spawnBin,
+        spawnArgs,
         { windowsHide: true, timeout: 5000, env: process.env },
         (_err, stdout, stderr) => {
           resolve(/miktex/i.test(`${stdout ?? ""}\n${stderr ?? ""}`));
@@ -958,13 +961,18 @@ export class LatexRenderer {
   ): Promise<void> {
     if (signal?.aborted) return Promise.reject(makeAbortError());
     const lower = bin.toLowerCase();
+    const isJsOnWin = process.platform === "win32" && /\.(m?js|cjs)$/i.test(bin);
+    const spawnBin = isJsOnWin ? process.execPath : bin;
+    const spawnArgs = isJsOnWin ? [bin, ...args] : args;
     // .cmd/.bat cannot be launched by execFile on Windows without a shell.
     const shell =
-      process.platform === "win32" && (lower.endsWith(".cmd") || lower.endsWith(".bat"));
+      !isJsOnWin &&
+      process.platform === "win32" &&
+      (lower.endsWith(".cmd") || lower.endsWith(".bat"));
     return new Promise((resolve, reject) => {
       const child = execFile(
-        bin,
-        args,
+        spawnBin,
+        spawnArgs,
         {
           cwd,
           windowsHide: true,
