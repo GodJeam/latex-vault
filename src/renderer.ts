@@ -1,25 +1,43 @@
-import { execFile } from "child_process";
+import { execFile, type ChildProcess } from "child_process";
 import { createHash } from "crypto";
-import {
-  accessSync,
-  constants as fsConstants,
-  existsSync,
-  mkdirSync,
-  promises as fsp,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-} from "fs";
-import { tmpdir } from "os";
+import { accessSync, constants as fsConstants, promises as fsp, statSync } from "fs";
+import { cpus, tmpdir } from "os";
 import { join } from "path";
-import type LatexVaultPlugin from "./main";
 import type { LatexSettings } from "./settings";
+
+export interface RendererHost {
+  settings: LatexSettings;
+  t: (text: string) => string;
+}
+
+export interface RenderOptions {
+  signal?: AbortSignal;
+}
+
+export interface RendererOptions {
+  cacheDir?: string;
+  maxConcurrency?: number;
+  maxMemoEntries?: number;
+}
 
 interface EngineBuild {
   label: string;
   build: (dir: string) => Promise<void>;
 }
+
+interface InFlightEntry {
+  promise: Promise<string>;
+  controller: AbortController;
+  refs: number;
+}
+
+const DEFAULT_MAX_MEMO_ENTRIES = 200;
+const CACHE_MAX_AGE_MS = 14 * 24 * 3600 * 1000;
+const CACHE_MAX_BYTES = 256 * 1024 * 1024;
+const STALE_BUILD_DIR_AGE_MS = 3600 * 1000;
+const EXEC_TIMEOUT_MS = 120_000;
+const EXEC_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const LEGACY_HASH_DIR_RE = /^[0-9a-f]{32}$/;
 
 // Environments that produce a picture on their own and must NOT be nested in
 // another tikzpicture.
@@ -92,6 +110,12 @@ const ATTR_OP_RE = /(?:^|\s)opacity=["']([^"']*)["']/i;
 
 function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function makeAbortError(): Error {
+  const err = new Error("LaTeX rendering aborted.");
+  err.name = "AbortError";
+  return err;
 }
 
 /** Strip an unescaped `%` TeX comment from a single line. */
@@ -398,65 +422,202 @@ function getFallbackTexDirs(platform: NodeJS.Platform = process.platform): strin
 }
 
 export class LatexRenderer {
-  private plugin: LatexVaultPlugin;
+  private plugin: RendererHost;
   private cacheDir: string;
-  private inFlight = new Map<string, Promise<string>>();
-  // In-memory copy of already rendered SVGs: avoids re-reading the disk (and
-  // re-rendering) when the editor recomputes decorations on every keystroke.
+  private maxConcurrency: number;
+  private maxMemoEntries: number;
+  private inFlight = new Map<string, InFlightEntry>();
+  // Bounded LRU in-memory copy of already rendered SVGs: avoids re-reading disk
+  // when the editor recomputes decorations on keystrokes.
   private memo = new Map<string, string>();
   private binCache = new Map<string, string | null>();
   private miktexCache = new Map<string, boolean>();
+  private activeProcs = new Set<ChildProcess>();
+  private running = 0;
+  private waitQueue: Array<{
+    resolve: () => void;
+    reject: (err: Error) => void;
+    cleanup: () => void;
+  }> = [];
+  private disposed = false;
 
-  constructor(plugin: LatexVaultPlugin) {
+  constructor(plugin: RendererHost, options?: RendererOptions) {
     this.plugin = plugin;
-    this.cacheDir = join(tmpdir(), "latex-vault-render");
-    mkdirSync(this.cacheDir, { recursive: true });
+    this.cacheDir = options?.cacheDir ?? join(tmpdir(), "latex-vault-render");
+    const defaultConcurrency = Math.min(
+      4,
+      Math.max(1, Math.floor((cpus().length || 2) / 2))
+    );
+    this.maxConcurrency = Math.max(1, options?.maxConcurrency ?? defaultConcurrency);
+    this.maxMemoEntries = Math.max(1, options?.maxMemoEntries ?? DEFAULT_MAX_MEMO_ENTRIES);
   }
 
-  private computeHash(tex: string): string {
-    return createHash("sha256").update(tex).digest("hex").slice(0, 32);
+  private computeHash(tex: string, s: LatexSettings): string {
+    return createHash("sha256")
+      .update(`${s.engine}\0${s.shellEscape ? "1" : "0"}\0${tex}`)
+      .digest("hex")
+      .slice(0, 32);
+  }
+
+  private memoGet(hash: string): string | null {
+    const value = this.memo.get(hash);
+    if (value === undefined) return null;
+    // Refresh recency for LRU eviction.
+    this.memo.delete(hash);
+    this.memo.set(hash, value);
+    return value;
+  }
+
+  private memoSet(hash: string, svg: string): void {
+    if (this.memo.has(hash)) {
+      this.memo.delete(hash);
+    }
+    this.memo.set(hash, svg);
+    while (this.memo.size > this.maxMemoEntries) {
+      const oldest = this.memo.keys().next().value;
+      if (oldest === undefined) break;
+      this.memo.delete(oldest);
+    }
+  }
+
+  invalidateBinCache(): void {
+    this.binCache.clear();
+    this.miktexCache.clear();
   }
 
   // Synchronous in-memory cache lookup so Live Preview widgets can render
   // immediately without flashing a loading state.
   getCached(code: string): string | null {
     try {
-      const tex = buildTexSource(code, this.plugin.settings.extraPreamble);
-      return this.memo.get(this.computeHash(tex)) ?? null;
+      const s = this.plugin.settings;
+      const tex = buildTexSource(code, s.extraPreamble);
+      return this.memoGet(this.computeHash(tex, s));
     } catch {
       return null;
     }
   }
 
-  async render(code: string): Promise<string> {
+  async render(code: string, options?: RenderOptions): Promise<string> {
+    if (this.disposed) throw makeAbortError();
+    const signal = options?.signal;
+    if (signal?.aborted) throw makeAbortError();
+
     const s = this.plugin.settings;
     const tex = buildTexSource(code, s.extraPreamble);
-    const hash = this.computeHash(tex);
-    const dir = join(this.cacheDir, hash);
-    const svgFile = join(dir, "main.svg");
+    const hash = this.computeHash(tex, s);
+    const svgFile = join(this.cacheDir, `${hash}.svg`);
 
-    const memoized = this.memo.get(hash);
-    if (memoized) return memoized;
+    const memoized = this.memoGet(hash);
+    if (memoized !== null) return memoized;
 
     const cached = await this.readCache(svgFile);
+    if (signal?.aborted) throw makeAbortError();
     if (cached !== null) {
-      this.memo.set(hash, cached);
+      this.memoSet(hash, cached);
       return cached;
     }
 
-    const existing = this.inFlight.get(hash);
-    if (existing) return existing;
+    let entry = this.inFlight.get(hash);
+    if (!entry) {
+      const controller = new AbortController();
+      const promise = this.doRender(tex, svgFile, s, controller.signal)
+        .then((svg) => {
+          this.memoSet(hash, svg);
+          return svg;
+        })
+        .finally(() => {
+          this.inFlight.delete(hash);
+        });
+      entry = { promise, controller, refs: 0 };
+      this.inFlight.set(hash, entry);
+    }
 
-    const promise = this.doRender(tex, dir, svgFile, s)
-      .then((svg) => {
-        this.memo.set(hash, svg);
-        return svg;
-      })
-      .finally(() => {
-        this.inFlight.delete(hash);
+    entry.refs++;
+    const currentEntry = entry;
+    return this.awaitWithAbort(currentEntry, signal);
+  }
+
+  private awaitWithAbort(entry: InFlightEntry, signal?: AbortSignal): Promise<string> {
+    if (!signal) {
+      return entry.promise.finally(() => {
+        entry.refs = Math.max(0, entry.refs - 1);
       });
-    this.inFlight.set(hash, promise);
-    return promise;
+    }
+    if (signal.aborted) {
+      entry.refs = Math.max(0, entry.refs - 1);
+      if (entry.refs === 0) entry.controller.abort();
+      return Promise.reject(makeAbortError());
+    }
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        entry.refs = Math.max(0, entry.refs - 1);
+        if (entry.refs === 0) entry.controller.abort();
+        reject(makeAbortError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      entry.promise.then(
+        (svg) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          entry.refs = Math.max(0, entry.refs - 1);
+          resolve(svg);
+        },
+        (err) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          entry.refs = Math.max(0, entry.refs - 1);
+          reject(err);
+        }
+      );
+    });
+  }
+
+  private acquireSlot(signal?: AbortSignal): Promise<void> {
+    if (this.disposed || signal?.aborted) {
+      return Promise.reject(makeAbortError());
+    }
+    if (this.running < this.maxConcurrency) {
+      this.running++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve, reject) => {
+      const item = {
+        resolve: () => {
+          item.cleanup();
+          resolve();
+        },
+        reject: (err: Error) => {
+          item.cleanup();
+          reject(err);
+        },
+        cleanup: () => {
+          if (signal) signal.removeEventListener("abort", onAbort);
+        },
+      };
+      const onAbort = () => {
+        const idx = this.waitQueue.indexOf(item);
+        if (idx >= 0) this.waitQueue.splice(idx, 1);
+        item.reject(makeAbortError());
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      this.waitQueue.push(item);
+    });
+  }
+
+  private releaseSlot(): void {
+    while (this.waitQueue.length > 0) {
+      const next = this.waitQueue.shift();
+      if (next) {
+        next.resolve();
+        return;
+      }
+    }
+    this.running = Math.max(0, this.running - 1);
   }
 
   // Read a cached SVG asynchronously so the UI thread is not blocked. A stale
@@ -469,93 +630,127 @@ export class LatexRenderer {
       return null;
     }
     if (isBlankSvg(cached)) {
-      try {
-        await fsp.rm(svgFile, { force: true });
-      } catch {
-        // ignore
-      }
+      await fsp.rm(svgFile, { force: true }).catch(() => {});
       return null;
     }
+    // Refresh mtime on hit so active diagrams do not expire as stale.
+    const now = new Date();
+    void fsp.utimes(svgFile, now, now).catch(() => {});
     return cleanSvg(cached);
   }
 
   private async doRender(
     tex: string,
-    dir: string,
-    svgFile: string,
-    s: LatexSettings
+    cacheSvgFile: string,
+    s: LatexSettings,
+    signal: AbortSignal
   ): Promise<string> {
-    await fsp.mkdir(dir, { recursive: true });
-    await fsp.writeFile(join(dir, "main.tex"), tex, "utf8");
+    await this.acquireSlot(signal);
+    let buildDir: string | null = null;
+    try {
+      if (signal.aborted) throw makeAbortError();
 
-    const latexPdf = this.resolveLatex("pdf");
-    const latexDvi = this.resolveLatex("dvi");
-    const dvisvgm = this.resolveDvisvgm();
+      const latexPdf = this.resolveLatex("pdf");
+      const latexDvi = this.resolveLatex("dvi");
+      const dvisvgm = this.resolveDvisvgm();
 
-    const engines: EngineBuild[] = [];
-    if (s.engine !== "dvi" && latexPdf && dvisvgm) {
-      engines.push({
-        label: "pdflatex + dvisvgm",
-        build: async (d) => {
-          const args = await this.latexArgs(latexPdf);
-          await this.run(latexPdf, args, d);
-          await this.run(dvisvgm, ["--pdf", "--no-fonts=1", "--precision=2", "main.pdf"], d);
-        },
-      });
-    }
-    if (s.engine !== "pdf" && latexDvi && dvisvgm) {
-      engines.push({
-        label: "latex + dvisvgm",
-        build: async (d) => {
-          const args = await this.latexArgs(latexDvi);
-          await this.run(latexDvi, args, d);
-          await this.run(dvisvgm, ["--no-fonts=1", "--precision=2", "main.dvi"], d);
-        },
-      });
-    }
+      const engines: EngineBuild[] = [];
+      if (s.engine !== "dvi" && latexPdf && dvisvgm) {
+        engines.push({
+          label: "pdflatex + dvisvgm",
+          build: async (d) => {
+            const args = await this.latexArgs(latexPdf);
+            await this.run(latexPdf, args, d, signal);
+            await this.run(
+              dvisvgm,
+              ["--pdf", "--no-fonts=1", "--precision=2", "main.pdf"],
+              d,
+              signal
+            );
+          },
+        });
+      }
+      if (s.engine !== "pdf" && latexDvi && dvisvgm) {
+        engines.push({
+          label: "latex + dvisvgm",
+          build: async (d) => {
+            const args = await this.latexArgs(latexDvi);
+            await this.run(latexDvi, args, d, signal);
+            await this.run(
+              dvisvgm,
+              ["--no-fonts=1", "--precision=2", "main.dvi"],
+              d,
+              signal
+            );
+          },
+        });
+      }
 
-    if (engines.length === 0) {
-      const missing: string[] = [];
-      if (!latexPdf && !latexDvi) missing.push("latex/pdflatex");
-      if (!dvisvgm) missing.push("dvisvgm");
-      throw new Error(
-        `Binary ${missing.join(" and ")} not found. Check the TeX installation or set the paths in the plugin settings.`
-      );
-    }
+      if (engines.length === 0) {
+        const missing: string[] = [];
+        if (!latexPdf && !latexDvi) missing.push("latex/pdflatex");
+        if (!dvisvgm) missing.push("dvisvgm");
+        throw new Error(
+          `Binary ${missing.join(" and ")} not found. Check the TeX installation or set the paths in the plugin settings.`
+        );
+      }
 
-    const errors: string[] = [];
-    for (const engine of engines) {
-      try {
-        await engine.build(dir);
-        let svg: string;
+      await fsp.mkdir(this.cacheDir, { recursive: true });
+      buildDir = await fsp.mkdtemp(join(this.cacheDir, ".build-"));
+      await fsp.writeFile(join(buildDir, "main.tex"), tex, "utf8");
+      const outSvgFile = join(buildDir, "main.svg");
+
+      const errors: string[] = [];
+      for (const engine of engines) {
+        if (signal.aborted) throw makeAbortError();
         try {
-          svg = await fsp.readFile(svgFile, "utf8");
-        } catch {
-          throw new Error(`dvisvgm did not produce any SVG (engine ${engine.label})`);
-        }
-        if (isBlankSvg(svg)) {
-          // dvisvgm (e.g. MiKTeX 3.4.3) can emit every stroke with
-          // stroke-opacity='0' when converting some pgfplots PDFs: the file
-          // looks valid but nothing is visible. Treat it as a failure and let
-          // the next engine (DVI) try instead.
-          throw new Error(
-            `dvisvgm produced an empty SVG (all strokes/fills are transparent) — engine ${engine.label}`
-          );
-        }
-        return cleanSvg(svg);
-      } catch (e) {
-        errors.push(e instanceof Error ? e.message : String(e));
-        for (const f of ["main.pdf", "main.dvi"]) {
+          await engine.build(buildDir);
+          let svg: string;
           try {
-            await fsp.rm(join(dir, f), { force: true });
+            svg = await fsp.readFile(outSvgFile, "utf8");
           } catch {
-            // ignore
+            throw new Error(`dvisvgm did not produce any SVG (engine ${engine.label})`);
+          }
+          if (isBlankSvg(svg)) {
+            // dvisvgm (e.g. MiKTeX 3.4.3) can emit every stroke with
+            // stroke-opacity='0' when converting some pgfplots PDFs: the file
+            // looks valid but nothing is visible. Treat it as a failure and let
+            // the next engine (DVI) try instead.
+            throw new Error(
+              `dvisvgm produced an empty SVG (all strokes/fills are transparent) — engine ${engine.label}`
+            );
+          }
+          const cleaned = cleanSvg(svg);
+          await this.writeCacheAtomic(cacheSvgFile, cleaned);
+          return cleaned;
+        } catch (e) {
+          if (signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+            throw makeAbortError();
+          }
+          errors.push(e instanceof Error ? e.message : String(e));
+          for (const f of ["main.pdf", "main.dvi", "main.svg"]) {
+            await fsp.rm(join(buildDir, f), { force: true }).catch(() => {});
           }
         }
       }
-    }
 
-    throw new Error(this.buildErrorMessage(errors, dir));
+      throw new Error(await this.buildErrorMessage(errors, buildDir));
+    } finally {
+      if (buildDir) {
+        await fsp.rm(buildDir, { recursive: true, force: true }).catch(() => {});
+      }
+      this.releaseSlot();
+    }
+  }
+
+  private async writeCacheAtomic(targetFile: string, content: string): Promise<void> {
+    const tmpFile = `${targetFile}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await fsp.writeFile(tmpFile, content, "utf8");
+      await fsp.rename(tmpFile, targetFile);
+    } catch {
+      await fsp.rm(tmpFile, { force: true }).catch(() => {});
+    }
   }
 
   private async isMiktexBinary(bin: string): Promise<boolean> {
@@ -588,98 +783,107 @@ export class LatexRenderer {
     });
   }
 
-  // Wait for in-flight renders before deleting the cache, so a build that is
-  // writing into a cache directory cannot fail with a missing-directory error.
-  async clearCache(): Promise<void> {
-    while (this.inFlight.size > 0) {
-      await Promise.allSettled([...this.inFlight.values()]);
+  /** Abort all in-flight renders and terminate any running TeX child processes. */
+  destroy(): void {
+    this.disposed = true;
+    for (const entry of this.inFlight.values()) {
+      entry.controller.abort();
     }
-    this.memo.clear();
-    try {
-      rmSync(this.cacheDir, { recursive: true, force: true });
-      mkdirSync(this.cacheDir, { recursive: true });
-    } catch {
-      // ignore
+    this.inFlight.clear();
+    while (this.waitQueue.length > 0) {
+      const waiter = this.waitQueue.shift();
+      waiter?.reject(makeAbortError());
     }
-  }
-
-  // Opportunistic cleanup: drop cached renders older than 14 days and, if the
-  // cache exceeds 256 MB, remove the oldest directories first.
-  cleanupCache(): void {
-    const maxAgeMs = 14 * 24 * 3600 * 1000;
-    const maxBytes = 256 * 1024 * 1024;
-    let names: string[];
-    try {
-      names = readdirSync(this.cacheDir);
-    } catch {
-      return;
-    }
-    const now = Date.now();
-    const dirs: { path: string; mtime: number; size: number }[] = [];
-    for (const name of names) {
-      const p = join(this.cacheDir, name);
+    for (const proc of [...this.activeProcs]) {
       try {
-        const st = statSync(p);
-        if (st.isDirectory()) dirs.push({ path: p, mtime: st.mtimeMs, size: this.dirSize(p) });
+        proc.kill();
       } catch {
         // ignore
       }
     }
-    let total = 0;
-    for (const d of dirs) {
-      if (now - d.mtime > maxAgeMs) {
-        try {
-          rmSync(d.path, { recursive: true, force: true });
-        } catch {
-          // ignore
-        }
-      } else {
-        total += d.size;
-      }
-    }
-    if (total > maxBytes) {
-      const remaining = dirs
-        .filter((d) => existsSync(d.path))
-        .sort((a, b) => a.mtime - b.mtime);
-      for (const d of remaining) {
-        if (total <= maxBytes) break;
-        try {
-          rmSync(d.path, { recursive: true, force: true });
-          total -= d.size;
-        } catch {
-          // ignore
-        }
-      }
-    }
+    this.activeProcs.clear();
   }
 
-  private dirSize(dir: string): number {
-    let total = 0;
+  // Wait for in-flight renders before deleting the cache, so a build that is
+  // writing into the cache directory cannot fail with a missing-directory error.
+  async clearCache(): Promise<void> {
+    while (this.inFlight.size > 0) {
+      await Promise.allSettled([...this.inFlight.values()].map((e) => e.promise));
+    }
+    this.memo.clear();
     try {
-      for (const name of readdirSync(dir)) {
-        try {
-          total += statSync(join(dir, name)).size;
-        } catch {
-          // ignore
-        }
-      }
+      await fsp.rm(this.cacheDir, { recursive: true, force: true });
+      await fsp.mkdir(this.cacheDir, { recursive: true });
     } catch {
       // ignore
     }
-    return total;
   }
 
-  private buildErrorMessage(errors: string[], dir: string): string {
+  // Opportunistic async cleanup: drop cached SVGs older than 14 days, prune
+  // legacy/stale build directories, and cap total cache size at 256 MB.
+  async cleanupCache(): Promise<void> {
+    let names: string[];
+    try {
+      names = await fsp.readdir(this.cacheDir);
+    } catch {
+      return;
+    }
+    const now = Date.now();
+    const files: { path: string; mtime: number; size: number }[] = [];
+    for (const name of names) {
+      const p = join(this.cacheDir, name);
+      try {
+        const st = await fsp.lstat(p);
+        if (st.isDirectory()) {
+          // Clean up pre-0.4.1 hash directories and crashed build dirs.
+          const isStaleBuild =
+            name.startsWith(".build-") && now - st.mtimeMs > STALE_BUILD_DIR_AGE_MS;
+          if (LEGACY_HASH_DIR_RE.test(name) || isStaleBuild) {
+            await fsp.rm(p, { recursive: true, force: true }).catch(() => {});
+          }
+          continue;
+        }
+        if (st.isFile() && name.endsWith(".svg")) {
+          if (now - st.mtimeMs > CACHE_MAX_AGE_MS) {
+            await fsp.rm(p, { force: true }).catch(() => {});
+          } else {
+            files.push({ path: p, mtime: st.mtimeMs, size: st.size });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    let total = files.reduce((sum, f) => sum + f.size, 0);
+    if (total > CACHE_MAX_BYTES) {
+      files.sort((a, b) => a.mtime - b.mtime);
+      for (const f of files) {
+        if (total <= CACHE_MAX_BYTES) break;
+        try {
+          await fsp.rm(f.path, { force: true });
+          total -= f.size;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  private async buildErrorMessage(errors: string[], dir: string): Promise<string> {
     const logFile = join(dir, "main.log");
     let tail = "";
-    if (existsSync(logFile)) {
-      const lines = readFileSync(logFile, "utf8").split(/\r?\n/);
+    try {
+      const rawLog = await fsp.readFile(logFile, "utf8");
+      const lines = rawLog.split(/\r?\n/);
       const errs = lines.filter((l) =>
         /^!|^l\.\d+|error|Error|Undefined control sequence|File .* not found|cannot|runaway/i.test(
           l
         )
       );
       tail = (errs.length ? errs : lines).slice(-25).join("\n");
+    } catch {
+      // main.log may not exist if binary failed to launch
     }
     const detail = errors.length
       ? errors.map((e, i) => `${this.plugin.t("Attempt")} ${i + 1}: ${e}`).join("\n\n")
@@ -746,25 +950,51 @@ export class LatexRenderer {
     return null;
   }
 
-  private run(bin: string, args: string[], cwd: string): Promise<void> {
+  private run(
+    bin: string,
+    args: string[],
+    cwd: string,
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (signal?.aborted) return Promise.reject(makeAbortError());
     const lower = bin.toLowerCase();
     // .cmd/.bat cannot be launched by execFile on Windows without a shell.
     const shell =
       process.platform === "win32" && (lower.endsWith(".cmd") || lower.endsWith(".bat"));
     return new Promise((resolve, reject) => {
-      execFile(
+      const child = execFile(
         bin,
         args,
-        { cwd, windowsHide: true, timeout: 120000, env: process.env, shell },
-        (error, _stdout, stderr) => {
+        {
+          cwd,
+          windowsHide: true,
+          timeout: EXEC_TIMEOUT_MS,
+          maxBuffer: EXEC_MAX_BUFFER_BYTES,
+          env: process.env,
+          shell,
+          signal,
+        },
+        (error, stdout, stderr) => {
+          this.activeProcs.delete(child);
           if (error) {
-            const e = error as NodeJS.ErrnoException;
-            if (e.code === "ENOENT") {
+            const e = error as NodeJS.ErrnoException & {
+              killed?: boolean;
+              signal?: string | null;
+            };
+            if (signal?.aborted || e.name === "AbortError") {
+              reject(makeAbortError());
+            } else if (e.code === "ENOENT") {
               reject(new Error(`Executable not found: ${bin}`));
+            } else if (e.killed && e.signal) {
+              reject(
+                new Error(
+                  `Compilation timed out after ${Math.round(EXEC_TIMEOUT_MS / 1000)}s (${bin})`
+                )
+              );
             } else if (typeof e.code === "number") {
               reject(
                 new Error(
-                  `Error (exit code ${e.code}) from ${bin}: ${(stderr || "").trim() || _stdout.trim()}`
+                  `Error (exit code ${e.code}) from ${bin}: ${(stderr || "").trim() || stdout.trim()}`
                 )
               );
             } else {
@@ -775,6 +1005,7 @@ export class LatexRenderer {
           }
         }
       );
+      this.activeProcs.add(child);
     });
   }
 }
