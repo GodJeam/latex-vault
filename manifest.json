@@ -1,7 +1,7 @@
 {
   "id": "latex-vault",
   "name": "LaTeX Vault",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "minAppVersion": "1.5.0",
   "description": "Render LaTeX code blocks (TikZ, pgfplots, matrices, algorithms, code listings, math) to SVG using a local TeX installation (TeX Live/MiKTeX).",
   "author": "GodJeam",

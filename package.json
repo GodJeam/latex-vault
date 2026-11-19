@@ -1,11 +1,13 @@
 {
   "name": "latex-vault",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "LaTeX rendering for Obsidian using a local TeX installation",
+  "repository": "https://github.com/GodJeam/latex-vault",
   "main": "main.js",
   "scripts": {
     "dev": "node build/esbuild.config.mjs",
-    "build": "tsc --noEmit --skipLibCheck -p build/tsconfig.json && node build/esbuild.config.mjs production"
+    "build": "tsc --noEmit --skipLibCheck -p build/tsconfig.json && node build/esbuild.config.mjs production",
+    "test": "node build/run-tests.mjs"
   },
   "keywords": [
     "obsidian",
@@ -16,8 +18,8 @@
   ],
   "license": "GPL-3.0",
   "devDependencies": {
-    "@codemirror/language": "^6.12.4",
-    "@lezer/common": "^1.5.2",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.35.0",
     "@types/node": "^20.11.0",
     "esbuild": "^0.25.12",
     "obsidian": "^1.5.7",

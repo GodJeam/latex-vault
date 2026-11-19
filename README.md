@@ -1,25 +1,26 @@
 # LaTeX Vault
 
-An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **local TeX installation** (MiKTeX / TeX Live), producing SVG images: TikZ diagrams, pgfplots, matrices, algorithms, code listings, math — with **any installed package**, including the ones TikZJax cannot load.
+An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **local TeX installation** (MiKTeX / TeX Live), producing SVG images: TikZ diagrams, pgfplots, matrices, algorithms, code listings, and math with **any installed package**, including the ones TikZJax cannot load.
 
 ## Features
 
-- Renders ```latex-vault blocks (plus legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading and Edit mode.
-- Supports **any LaTeX package** (pgfplots, circuitikz, tikz-cd, forest, nicematrix, algorithmicx, listings, ...), unlike TikZJax.
-- Automatic `pdflatex + dvisvgm` / `latex + dvisvgm` fallback, with disk caching.
-- In Edit mode the code stays available behind a closed "Show LaTeX code" toggle.
-- Smart wrapping: bare TikZ commands and pgfplots axes are wrapped in a `tikzpicture`, while self-contained environments (`forest`, `circuitikz`, `quantikz`, `karnaugh-map`, `bytefield`) and non-picture content (matrices, algorithms, code listings, math) are typeset as-is.
-- Optional **shell-escape** (off by default) for packages that run external tools.
+- Renders ```latex-vault blocks (plus legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading mode and Live Preview (while respecting Source Mode).
+- Supports **any LaTeX package** (`pgfplots`, `circuitikz`, `tikz-cd`, `forest`, `nicematrix`, `algorithmicx`, `listings`, ...), unlike TikZJax.
+- Automatic `pdflatex + dvisvgm` / `latex + dvisvgm` fallback, automatic second pass for `nicematrix` and cross-references, bounded concurrency, and SVG-only disk caching.
+- **Dark mode adaptation**: choose between automatic color inversion (preserving hues), a light paper card, or unmodified rendering.
+- In Live Preview, collapsed blocks act as atomic units behind a **"Show LaTeX code"** toggle; expanded edits are debounced so typing does not trigger intermediate compilations.
+- Smart wrapping: bare TikZ commands, `scope`, and `pgfplots` axes are wrapped in a `tikzpicture`, while self-contained environments (`forest`, `circuitikz`, `quantikz`, `karnaugh-map`, `bytefield`) and non-picture content (matrices, algorithms, code listings, math) are typeset as-is.
+- Command Palette actions (**Clear LaTeX rendering cache**, **Toggle LaTeX live preview**) and optional **shell-escape** (off by default) for packages that run external tools.
 
 ## Requirements
 
-- Obsidian (desktop).
+- **Obsidian** desktop **1.5.0+** (Windows, macOS, Linux).
 - A local **TeX** installation with `latex`/`pdflatex` and `dvisvgm` on your `PATH` (or configured in the plugin settings):
 
 | Platform | Recommended TeX | Notes |
 |---|---|---|
-| Windows | MiKTeX | set the `latex`/`dvisvgm` binary paths in settings if not on `PATH` |
-| macOS | MacTeX / TeX Live | binaries usually in `/Library/TeX/texbin` |
+| Windows | MiKTeX or TeX Live | MiKTeX vs TeX Live flags are detected automatically; native `.exe` paths are checked if not on `PATH` |
+| macOS | MacTeX / TeX Live | standard paths like `/Library/TeX/texbin` are checked automatically |
 | Linux | TeX Live (`texlive-full`) | binaries usually in `/usr/bin` |
 
 For the build you also need **Node.js**.
@@ -90,7 +91,7 @@ Leading lines with preamble commands (`\usepackage`, `\usetikzlibrary`, `\newcom
 | Detected | Package |
 |---|---|
 | `tikzcd` | `tikz-cd` |
-| `axis` (any pgfplots axis), `\addplot` | `pgfplots` (`compat=1.18`) |
+| `axis`, `groupplot`, `polaraxis`, `ternaryaxis`, `smithchart`, `\addplot` | `pgfplots` (`compat=1.18`) + matching library |
 | `forest` / `circuitikz` / `quantikz` | `forest` / `circuitikz` / `quantikz` |
 | `karnaugh-map` / `bytefield` | `karnaugh-map` / `bytefield` |
 | `pNiceMatrix`, `NiceArray`, ... / `blockarray` | `nicematrix` / `blkarray` |
@@ -98,24 +99,51 @@ Leading lines with preamble commands (`\usepackage`, `\usetikzlibrary`, `\newcom
 | `lstlisting` / `minted` / `tcolorbox` | `listings` / `minted` / `tcolorbox` |
 | `\dv`, `\pdv`, `\bra`, `\ket` | `physics` |
 | `\coloneqq`, `\mathclap`, ... | `mathtools` |
-| `\cancel` / `\SI`, `\num`, ... | `cancel` / `siunitx` |
+| `\cancel` / `\SI`, `\qty`, `\num`, ... | `cancel` / `siunitx` |
 
 Floats (`algorithm`, `figure`, `table`) are forced to the `[H]` placement so they render inside the standalone image; `\begin{algorithm}` loads `algorithm` automatically unless you load `algorithm2e`.
 
 Any other installed package can be loaded with `\usepackage` in the block or in the **Extra preamble** setting. A full TeX installation (e.g. `texlive-scheme-full`) avoids missing-package errors.
 
-> **minted**: recent TeX Live versions run it in restricted mode. If yours does not, enable **shell-escape** in the settings — only for trusted vaults, since it lets code blocks execute commands.
+> **minted**: recent TeX Live versions run it in restricted mode. If yours does not, enable **shell-escape** in the settings (only for trusted vaults, since it lets code blocks execute commands).
 
 The ```latex-vault tag is dedicated to the plugin, so Obsidian's ```latex syntax highlighting keeps working for code you only want to show. The ```tikz, ```tikzcd and ```pgfplots tags still work for existing notes.
 
-In the plugin settings you can configure the engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to verify your TeX configuration.
+In the plugin settings you can configure the dark mode adaptation, rendering engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to run an uncached check of your TeX setup, or trigger **Clear LaTeX rendering cache** and **Toggle LaTeX live preview** from the Command Palette.
 
-## Structure
+## Privacy & Data Handling
 
-- `src/` — TypeScript source
-- `build/` — build tooling (esbuild config, tsconfig)
-- `main.js` / `manifest.json` / `styles.css` — built plugin files (copy into the vault)
+LaTeX Vault runs entirely locally inside Obsidian without telemetry, analytics, or network requests; all rendering is performed by your local TeX binaries (`pdflatex`/`latex` and `dvisvgm`).
+
+- **Settings**: Stored in `<vault>/.obsidian/plugins/latex-vault/data.json` and validated on load.
+- **Render cache**: Compiled SVGs are stored in a user-private temporary directory (`$TMPDIR/latex-vault-render-<uid>`, `0700` directory, `0600` files) and expire automatically after 14 days (capped at 256 MB). Intermediate `.tex`, `.aux`, `.log`, `.pdf`, and `.dvi` build files are removed immediately after each compilation.
+- **SVG sanitization**: Produced SVGs are scoped with unique per-diagram ID prefixes and sanitized via Obsidian's `sanitizeHTMLToDom` before being inserted into the DOM.
+- **Shell escape & Windows launchers**: **Enable shell-escape** is off by default; enable it only for trusted vaults. On Windows, `.cmd`/`.bat` launchers are rejected to avoid `cmd.exe` shell execution (use native `.exe` binaries).
+
+## Project Structure
+
+```text
+src/
+├── main.ts        # Plugin entry point, commands, Reading Mode post-processor & settings validation
+├── renderer.ts    # TeX source generation, bounded local compilation & SVG caching
+├── livePreview.ts # CodeMirror 6 Live Preview extension & fence discovery
+├── settings.ts    # Plugin settings tab & uncached TeX configuration test
+├── ui.ts          # Shared DOM helpers for SVG figures, loading status & errors
+├── languages.ts   # Supported fenced block tags & CommonMark fence parser
+└── i18n.ts        # Type-safe English and Italian translations
+build/
+├── esbuild.config.mjs # Production/dev bundler
+├── run-tests.mjs      # Offline Node test runner
+└── tsconfig.json      # TypeScript configuration
+test/
+├── mock-tex.mjs       # Offline mock TeX/dvisvgm simulator
+└── suite.test.ts      # Unit and integration tests (npm test)
+```
+
+## Contributing
+
+Development happens on the `dev` branch. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a Pull Request.
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0, see [LICENSE](LICENSE).

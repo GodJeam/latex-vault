@@ -1,13 +1,15 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type LatexVaultPlugin from "./main";
-import type { Language } from "./i18n";
+import type { Language, TranslationKey } from "./i18n";
 
 export type LatexEngine = "auto" | "pdf" | "dvi";
+export type DarkModeAdaptation = "auto" | "paper" | "none";
 
 export interface LatexSettings {
   language: Language;
   enabled: boolean;
   engine: LatexEngine;
+  darkMode: DarkModeAdaptation;
   latexBin: string;
   dvisvgmBin: string;
   extraPreamble: string;
@@ -19,6 +21,7 @@ export const DEFAULT_SETTINGS: LatexSettings = {
   language: "en",
   enabled: true,
   engine: "auto",
+  darkMode: "auto",
   latexBin: "",
   dvisvgmBin: "",
   extraPreamble: "",
@@ -26,20 +29,46 @@ export const DEFAULT_SETTINGS: LatexSettings = {
   shellEscape: false,
 };
 
+const SETTINGS_SAVE_DEBOUNCE_MS = 400;
+
 export class LatexSettingTab extends PluginSettingTab {
   plugin: LatexVaultPlugin;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingRenderBump = false;
 
   constructor(app: App, plugin: LatexVaultPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
 
+  private scheduleSave(bumpRenderConfig: boolean): void {
+    if (bumpRenderConfig) this.pendingRenderBump = true;
+    if (this.saveTimer !== null) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      void this.flushPendingSave();
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushPendingSave(): Promise<void> {
+    if (this.saveTimer === null) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    const shouldBump = this.pendingRenderBump;
+    this.pendingRenderBump = false;
+    await this.plugin.saveSettings();
+    if (shouldBump) this.plugin.bumpRenderConfig(true);
+  }
+
+  hide(): void {
+    void this.flushPendingSave();
+  }
+
   display(): void {
     const { containerEl } = this;
-    const t = (s: string) => this.plugin.t(s);
+    const t = (s: TranslationKey) => this.plugin.t(s);
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: t("LaTeX rendering") });
+    new Setting(containerEl).setName(t("LaTeX rendering")).setHeading();
 
     new Setting(containerEl)
       .setName(t("Language"))
@@ -54,6 +83,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.language = value as Language;
             await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews(true);
             new Notice(t("Language changed. Reload Obsidian to apply it everywhere."));
             this.display();
           })
@@ -70,13 +100,14 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.enabled = value;
             await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews(true);
           })
       );
 
     new Setting(containerEl)
-      .setName(t("Live preview in Edit mode"))
+      .setName(t("Live preview in edit mode"))
       .setDesc(t(
-        "Show the image also in Edit mode, below the code block. The preview updates automatically when the code changes."
+        "Show the image also in edit mode, below the code block. The preview updates automatically when the code changes."
       ))
       .addToggle((toggle) =>
         toggle
@@ -84,8 +115,29 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.livePreview = value;
             await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
           })
       );
+
+    new Setting(containerEl)
+      .setName(t("Dark mode adaptation"))
+      .setDesc(t(
+        "How diagrams adapt in dark themes. 'Auto' inverts light/dark tones while preserving hues; 'Light paper' places diagrams on a white background."
+      ))
+      .addDropdown((dd) =>
+        dd
+          .addOption("auto", t("Auto (invert colors)"))
+          .addOption("paper", t("Light paper background"))
+          .addOption("none", t("None"))
+          .setValue(this.plugin.settings.darkMode)
+          .onChange(async (value) => {
+            this.plugin.settings.darkMode = value as DarkModeAdaptation;
+            await this.plugin.saveSettings();
+            this.plugin.applyDarkModeClass();
+          })
+      );
+
+    new Setting(containerEl).setName(t("TeX configuration")).setHeading();
 
     new Setting(containerEl)
       .setName(t("Rendering engine"))
@@ -101,6 +153,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.engine = value as LatexEngine;
             await this.plugin.saveSettings();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
@@ -111,9 +164,10 @@ export class LatexSettingTab extends PluginSettingTab {
         text
           .setPlaceholder("(auto)")
           .setValue(this.plugin.settings.latexBin)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.latexBin = value.trim();
-            await this.plugin.saveSettings();
+            this.plugin.renderer.invalidateBinCache();
+            this.scheduleSave(true);
           })
       );
 
@@ -124,9 +178,10 @@ export class LatexSettingTab extends PluginSettingTab {
         text
           .setPlaceholder("(auto)")
           .setValue(this.plugin.settings.dvisvgmBin)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.dvisvgmBin = value.trim();
-            await this.plugin.saveSettings();
+            this.plugin.renderer.invalidateBinCache();
+            this.scheduleSave(true);
           })
       );
 
@@ -139,9 +194,9 @@ export class LatexSettingTab extends PluginSettingTab {
         text
           .setPlaceholder("\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}")
           .setValue(this.plugin.settings.extraPreamble)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.extraPreamble = value;
-            await this.plugin.saveSettings();
+            this.scheduleSave(true);
           })
       );
 
@@ -157,21 +212,25 @@ export class LatexSettingTab extends PluginSettingTab {
             this.plugin.settings.shellEscape = value;
             await this.plugin.saveSettings();
             await this.plugin.renderer.clearCache();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
+    new Setting(containerEl).setName(t("Maintenance")).setHeading();
+
     new Setting(containerEl)
       .setName(t("Test LaTeX rendering"))
-      .setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration."))
+      .setDesc(t("Runs a fresh uncached test diagram to verify your TeX and dvisvgm binaries."))
       .addButton((btn) =>
         btn.setButtonText(t("Test")).onClick(async () => {
+          await this.flushPendingSave();
           btn.setDisabled(true);
           btn.setButtonText(t("Rendering..."));
           try {
-            await this.plugin.renderer.render(
-              "\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}\n\\usepackage[siunitx]{circuitikz}\n\\usetikzlibrary{positioning, arrows.meta}\n\\begin{tikzpicture}\n\\draw (0,0) to[R=1k] (3,0);\n\\node[draw, right=1cm of {(3,0)}] (b) {OK};\n\\draw[-{Stealth}] (3,0) -- (b);\n\\end{tikzpicture}"
+            const { engine } = await this.plugin.renderer.testRender(
+              "\\usetikzlibrary{arrows.meta}\n\\begin{tikzpicture}\n\\draw[thick,-{Stealth}] (0,0) -- (2.5,0);\n\\node[draw, rounded corners] at (3.2,0) {$\\text{OK}$};\n\\end{tikzpicture}"
             );
-            new Notice(t("LaTeX rendering succeeded: the TeX configuration works."));
+            new Notice(`${t("LaTeX rendering succeeded:")} ${engine}`);
           } catch (e) {
             new Notice(`${t("LaTeX rendering error:")} ${(e as Error).message}`);
           } finally {
@@ -189,6 +248,7 @@ export class LatexSettingTab extends PluginSettingTab {
           btn.setDisabled(true);
           try {
             await this.plugin.renderer.clearCache();
+            this.plugin.bumpRenderConfig(true);
             new Notice(t("LaTeX cache cleared."));
           } finally {
             btn.setDisabled(false);

@@ -25,10 +25,13 @@ const context = await esbuild.context({
     ...builtins.map((b) => `node:${b}`),
   ],
   format: "cjs",
-  target: "es2018",
+  target: "es2022",
+  charset: "utf8",
   logLevel: "info",
-  sourcemap: prod ? false : "inline",
+  sourcemap: false,
   treeShaking: true,
+  minify: false,
+  legalComments: "none",
   outfile: "main.js",
 });
 
