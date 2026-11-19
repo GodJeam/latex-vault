@@ -1,13 +1,13 @@
 import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
-import { sanitizeHTMLToDom } from "obsidian";
+import { editorLivePreviewField, sanitizeHTMLToDom } from "obsidian";
 import type LatexVaultPlugin from "./main";
 import { FENCE_RE } from "./languages";
 
 const CLOSING_FENCE = /^```\s*$/;
 
-interface LatexBlock {
+export interface LatexBlock {
   from: number;
   to: number;
   fromLine: number;
@@ -16,10 +16,10 @@ interface LatexBlock {
 }
 
 // The whole document is scanned for fences; cache the result per document
-// snapshot so selection/viewport updates do not rescan it on every keystroke.
+// snapshot so selection updates do not rescan it on every keystroke.
 const blockCache = new WeakMap<object, LatexBlock[]>();
 
-function findLatexBlocks(state: EditorState): LatexBlock[] {
+export function findLatexBlocks(state: EditorState): LatexBlock[] {
   const cached = blockCache.get(state.doc);
   if (cached) return cached;
   const blocks: LatexBlock[] = [];
@@ -58,7 +58,12 @@ function findLatexBlocks(state: EditorState): LatexBlock[] {
 
 const expandEffect = StateEffect.define<number>();
 const collapseEffect = StateEffect.define<number>();
-const recalcEffect = StateEffect.define<null>();
+export const recalcEffect = StateEffect.define<null>();
+
+function isLivePreview(state: EditorState): boolean {
+  // Default to true when the Obsidian field is absent (e.g. unit tests).
+  return state.field(editorLivePreviewField, false) ?? true;
+}
 
 class LatexPreviewWidget extends WidgetType {
   private destroyed = false;
@@ -66,9 +71,10 @@ class LatexPreviewWidget extends WidgetType {
   constructor(
     readonly code: string,
     private renderFn: (code: string) => Promise<string>,
+    private getCachedFn: (code: string) => string | null,
     private t: (s: string) => string,
-    private from: number,
-    private expanded: boolean
+    readonly language: string,
+    readonly expanded: boolean
   ) {
     super();
   }
@@ -76,44 +82,88 @@ class LatexPreviewWidget extends WidgetType {
   eq(other: LatexPreviewWidget): boolean {
     return (
       other.code === this.code &&
-      other.from === this.from &&
-      other.expanded === this.expanded
+      other.expanded === this.expanded &&
+      other.language === this.language
     );
   }
 
-  toDOM(): HTMLElement {
+  updateDOM(dom: HTMLElement, _view: EditorView, prev: this): boolean {
+    if (prev.code !== this.code || dom.dataset.ready !== "1") return false;
+    dom.dataset.expanded = this.expanded ? "1" : "0";
+    const btn = dom.querySelector<HTMLButtonElement>(".latex-source-toggle");
+    if (btn) {
+      btn.textContent = this.expanded
+        ? this.t("Hide LaTeX code")
+        : this.t("Show LaTeX code");
+    }
+    const errTitle = dom.querySelector<HTMLElement>(".latex-error-title");
+    if (errTitle) {
+      errTitle.textContent = this.t("LaTeX rendering error");
+    }
+    return true;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "latex-live";
+    wrap.dataset.expanded = this.expanded ? "1" : "0";
 
-    const status = document.createElement("div");
-    status.className = "latex-status";
-    status.textContent = this.t("Rendering LaTeX...");
-    wrap.appendChild(status);
-
-    const finish = () => {
+    const appendToggle = () => {
+      wrap.dataset.ready = "1";
       // Toggle that reveals/hides the REAL code lines in the editor (editable).
       const btn = document.createElement("button");
+      btn.type = "button";
       btn.className = "latex-source-toggle";
-      btn.textContent = this.expanded ? this.t("Hide LaTeX code") : this.t("Show LaTeX code");
+      btn.textContent =
+        wrap.dataset.expanded === "1"
+          ? this.t("Hide LaTeX code")
+          : this.t("Show LaTeX code");
       btn.addEventListener("click", () => {
-        const view = EditorView.findFromDOM(wrap);
-        if (!view) return;
-        view.dispatch({
-          effects: this.expanded ? collapseEffect.of(this.from) : expandEffect.of(this.from),
+        const currentView = EditorView.findFromDOM(wrap) ?? view;
+        let pos: number;
+        try {
+          pos = currentView.posAtDOM(wrap);
+        } catch {
+          return;
+        }
+        const block = findLatexBlocks(currentView.state).find(
+          (b) => pos >= b.from && pos <= b.to
+        );
+        if (!block) return;
+        const isExpanded = wrap.dataset.expanded === "1";
+        currentView.dispatch({
+          effects: isExpanded
+            ? collapseEffect.of(block.from)
+            : expandEffect.of(block.from),
         });
       });
       wrap.appendChild(btn);
     };
 
+    const showSvg = (svg: string) => {
+      wrap.replaceChildren();
+      const fig = document.createElement("div");
+      fig.className = "latex-figure";
+      fig.appendChild(sanitizeHTMLToDom(svg));
+      wrap.appendChild(fig);
+      appendToggle();
+    };
+
+    const cached = this.getCachedFn(this.code);
+    if (cached !== null) {
+      showSvg(cached);
+      return wrap;
+    }
+
+    const status = document.createElement("div");
+    status.className = "latex-status latex-loading";
+    status.textContent = this.t("Rendering LaTeX...");
+    wrap.appendChild(status);
+
     this.renderFn(this.code)
       .then((svg) => {
         if (this.destroyed) return;
-        wrap.replaceChildren();
-        const fig = document.createElement("div");
-        fig.className = "latex-figure";
-        fig.appendChild(sanitizeHTMLToDom(svg));
-        wrap.appendChild(fig);
-        finish();
+        showSvg(svg);
       })
       .catch((err) => {
         if (this.destroyed) return;
@@ -129,7 +179,7 @@ class LatexPreviewWidget extends WidgetType {
         pre.textContent = err instanceof Error ? err.message : String(err);
         errBox.appendChild(pre);
         wrap.appendChild(errBox);
-        finish();
+        appendToggle();
       });
 
     return wrap;
@@ -144,14 +194,24 @@ class LatexPreviewWidget extends WidgetType {
   }
 }
 
-function computeDecorations(state: EditorState, plugin: LatexVaultPlugin, expanded: Set<number>) {
-  if (!plugin.settings.enabled || !plugin.settings.livePreview) return Decoration.none;
+function computeDecorations(
+  state: EditorState,
+  plugin: LatexVaultPlugin,
+  expanded: Set<number>
+) {
+  if (!plugin.settings.enabled || !plugin.settings.livePreview || !isLivePreview(state)) {
+    return Decoration.none;
+  }
   const builder = new RangeSetBuilder<Decoration>();
   const render = (code: string) => plugin.renderer.render(code);
+  const getCached = (code: string) => plugin.renderer.getCached(code);
+  const t = (s: string) => plugin.t(s);
+  const lang = plugin.settings.language;
   try {
     for (const block of findLatexBlocks(state)) {
+      const isExpanded = expanded.has(block.from);
       // Hide the code fence lines unless the user expanded the block.
-      if (!expanded.has(block.from)) {
+      if (!isExpanded) {
         for (let k = block.fromLine; k <= block.toLine; k++) {
           const pos = state.doc.line(k).from;
           builder.add(pos, pos, Decoration.line({ class: "latex-code-hidden" }));
@@ -161,7 +221,7 @@ function computeDecorations(state: EditorState, plugin: LatexVaultPlugin, expand
         block.to,
         block.to,
         Decoration.widget({
-          widget: new LatexPreviewWidget(block.code, render, plugin.t, block.from, expanded.has(block.from)),
+          widget: new LatexPreviewWidget(block.code, render, getCached, t, lang, isExpanded),
           block: true,
           side: 1,
         })
@@ -174,17 +234,30 @@ function computeDecorations(state: EditorState, plugin: LatexVaultPlugin, expand
 }
 
 export function livePreviewExtension(plugin: LatexVaultPlugin) {
-  const field = StateField.define<{ deco: DecorationSet; expanded: Set<number> }>({
+  return StateField.define<{ deco: DecorationSet; expanded: Set<number> }>({
     create(state: EditorState) {
       return { deco: computeDecorations(state, plugin, new Set()), expanded: new Set() };
     },
     update(value, tr) {
+      const modeChanged = isLivePreview(tr.state) !== isLivePreview(tr.startState);
       const relevant =
         tr.docChanged ||
-        tr.effects.some((e) => e.is(expandEffect) || e.is(collapseEffect) || e.is(recalcEffect));
+        modeChanged ||
+        tr.effects.some(
+          (e) => e.is(expandEffect) || e.is(collapseEffect) || e.is(recalcEffect)
+        );
       if (!relevant) return value;
+
       const expanded = new Set<number>();
-      for (const pos of value.expanded) expanded.add(tr.changes.mapPos(pos, -1));
+      for (const pos of value.expanded) {
+        const mapped = tr.changes.mapPos(pos, 1);
+        if (
+          mapped <= tr.state.doc.length &&
+          FENCE_RE.test(tr.state.doc.lineAt(mapped).text.trim())
+        ) {
+          expanded.add(mapped);
+        }
+      }
       for (const e of tr.effects) {
         if (e.is(expandEffect)) expanded.add(e.value);
         else if (e.is(collapseEffect)) expanded.delete(e.value);
@@ -193,13 +266,4 @@ export function livePreviewExtension(plugin: LatexVaultPlugin) {
     },
     provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
   });
-
-  return [
-    field,
-    EditorView.updateListener.of((update) => {
-      if (update.viewportChanged) {
-        update.view.dispatch({ effects: recalcEffect.of(null) });
-      }
-    }),
-  ];
 }

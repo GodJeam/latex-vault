@@ -26,10 +26,25 @@ export class LatexRenderer {
     mkdirSync(this.cacheDir, { recursive: true });
   }
 
+  private computeHash(tex: string): string {
+    return createHash("sha256").update(tex).digest("hex").slice(0, 32);
+  }
+
+  // Synchronous in-memory cache lookup so Live Preview widgets can render
+  // immediately without flashing a loading state.
+  getCached(code: string): string | null {
+    try {
+      const tex = this.buildTexSource(code, this.plugin.settings.extraPreamble);
+      return this.memo.get(this.computeHash(tex)) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async render(code: string): Promise<string> {
     const s = this.plugin.settings;
     const tex = this.buildTexSource(code, s.extraPreamble);
-    const hash = createHash("sha256").update(tex).digest("hex").slice(0, 32);
+    const hash = this.computeHash(tex);
     const dir = join(this.cacheDir, hash);
     const svgFile = join(dir, "main.svg");
 

@@ -116,11 +116,6 @@
   margin: 0 auto;
 }
 
-/* Nasconde il placeholder "immagine" che Obsidian aggiunge ai block widget */
-.cm-widgetBuffer {
-  display: none !important;
-}
-
 /* Hide the broken image Obsidian shows for unrecognised latex-vault/tikz blocks */
 .block-language-latex-vault img[src*="invalid.site"],
 .block-language-latex-vault img[src*="img-not-found"],
