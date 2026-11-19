@@ -114,6 +114,45 @@ const ATTR_STROKE_OP_RE = /(?:^|\s)stroke-opacity=["']([^"']*)["']/i;
 const ATTR_FILL_OP_RE = /(?:^|\s)fill-opacity=["']([^"']*)["']/i;
 const ATTR_OP_RE = /(?:^|\s)opacity=["']([^"']*)["']/i;
 
+const RERUN_WARNING_RE =
+  /Rerun to get|Label\(s\) may have changed|Package nicematrix Warning:[\s\S]*?rerun|Please rerun LaTeX|Rerun LaTeX/i;
+
+const LATEX_ERROR_LINE_RE =
+  /^!|^l\.\d+|LaTeX Error|Package .* Error|Undefined control sequence|File .* not found|Runaway argument|Emergency stop|Fatal error/i;
+
+/** Detect whether a LaTeX log indicates a second compilation pass is needed. */
+export function needsLatexRerun(log: string): boolean {
+  return RERUN_WARNING_RE.test(log);
+}
+
+/**
+ * Extract the concise error-relevant lines from a LaTeX log or stdout dump,
+ * keeping one line of context after each `! ...` error marker.
+ */
+export function extractLatexErrorTail(output: string, maxLines = 25): string {
+  const lines = output
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.length > 0);
+  if (lines.length === 0) return "";
+
+  const picked: string[] = [];
+  const seen = new Set<number>();
+  for (let i = 0; i < lines.length; i++) {
+    if (!LATEX_ERROR_LINE_RE.test(lines[i])) continue;
+    if (!seen.has(i)) {
+      seen.add(i);
+      picked.push(lines[i]);
+    }
+    if (lines[i].startsWith("!") && i + 1 < lines.length && !seen.has(i + 1)) {
+      seen.add(i + 1);
+      picked.push(lines[i + 1]);
+    }
+  }
+  const chosen = picked.length > 0 ? picked : lines;
+  return chosen.slice(-maxLines).join("\n");
+}
+
 function escapeRegExp(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -780,8 +819,7 @@ export class LatexRenderer {
         engines.push({
           label: "pdflatex + dvisvgm",
           build: async (d) => {
-            const args = await this.latexArgs(latexPdf);
-            await this.run(latexPdf, args, d, signal);
+            await this.runLatexWithRerun(latexPdf, d, signal);
             await this.run(
               dvisvgm,
               ["--pdf", "--no-fonts=1", "--precision=2", "main.pdf"],
@@ -795,8 +833,7 @@ export class LatexRenderer {
         engines.push({
           label: "latex + dvisvgm",
           build: async (d) => {
-            const args = await this.latexArgs(latexDvi);
-            await this.run(latexDvi, args, d, signal);
+            await this.runLatexWithRerun(latexDvi, d, signal);
             await this.run(
               dvisvgm,
               ["--no-fonts=1", "--precision=2", "main.dvi"],
@@ -876,6 +913,23 @@ export class LatexRenderer {
       await fsp.rename(tmpFile, targetFile);
     } catch {
       await fsp.rm(tmpFile, { force: true }).catch(() => {});
+    }
+  }
+
+  private async runLatexWithRerun(
+    bin: string,
+    dir: string,
+    signal: AbortSignal
+  ): Promise<void> {
+    const args = await this.latexArgs(bin);
+    await this.run(bin, args, dir, signal);
+    try {
+      const log = await fsp.readFile(join(dir, "main.log"), "utf8");
+      if (needsLatexRerun(log)) {
+        await this.run(bin, args, dir, signal);
+      }
+    } catch {
+      // main.log may be unavailable; continue with single-pass output
     }
   }
 
@@ -1011,20 +1065,15 @@ export class LatexRenderer {
     let tail = "";
     try {
       const rawLog = await fsp.readFile(logFile, "utf8");
-      const lines = rawLog.split(/\r?\n/);
-      const errs = lines.filter((l) =>
-        /^!|^l\.\d+|error|Error|Undefined control sequence|File .* not found|cannot|runaway/i.test(
-          l
-        )
-      );
-      tail = (errs.length ? errs : lines).slice(-25).join("\n");
+      tail = extractLatexErrorTail(rawLog, 25);
     } catch {
       // main.log may not exist if binary failed to launch
     }
     const detail = errors.length
       ? errors.map((e, i) => `${this.plugin.t("Attempt")} ${i + 1}: ${e}`).join("\n\n")
       : "";
-    return detail + (tail ? `\n\n--- LaTeX log ---\n${tail}` : "");
+    if (!tail || detail.includes(tail)) return detail;
+    return detail + `\n\n--- LaTeX log ---\n${tail}`;
   }
 
   private resolveLatex(engine: "pdf" | "dvi"): string {
@@ -1129,9 +1178,10 @@ export class LatexRenderer {
                 )
               );
             } else if (typeof e.code === "number") {
+              const summary = extractLatexErrorTail((stderr || "").trim() || stdout.trim(), 12);
               reject(
                 new Error(
-                  `Error (exit code ${e.code}) from ${bin}: ${(stderr || "").trim() || stdout.trim()}`
+                  `Error (exit code ${e.code}) from ${bin}${summary ? `: ${summary}` : ""}`
                 )
               );
             } else {
