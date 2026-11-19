@@ -1,9 +1,21 @@
-import { Plugin, sanitizeHTMLToDom } from "obsidian";
+import { MarkdownView, Notice, Plugin, sanitizeHTMLToDom } from "obsidian";
+import type { EditorView } from "@codemirror/view";
 import { LatexRenderer } from "./renderer";
-import { livePreviewExtension } from "./livePreview";
-import { DEFAULT_SETTINGS, LatexSettingTab, LatexSettings } from "./settings";
+import { livePreviewExtension, recalcEffect } from "./livePreview";
+import {
+  DEFAULT_SETTINGS,
+  LatexSettingTab,
+  type DarkModeAdaptation,
+  type LatexSettings,
+} from "./settings";
 import { translate } from "./i18n";
 import { LANGUAGE_SELECTOR } from "./languages";
+
+const DARK_MODE_CLASSES: Record<DarkModeAdaptation, string> = {
+  auto: "latex-vault-dark-auto",
+  paper: "latex-vault-dark-paper",
+  none: "latex-vault-dark-none",
+};
 
 export default class LatexVaultPlugin extends Plugin {
   settings!: LatexSettings;
@@ -17,6 +29,8 @@ export default class LatexVaultPlugin extends Plugin {
       await this.saveSettings();
     }
 
+    this.applyDarkModeClass();
+
     this.renderer = new LatexRenderer(this);
     // Drop stale/oversized cached renders asynchronously once Obsidian layout is ready.
     this.app.workspace.onLayoutReady(() => {
@@ -24,6 +38,30 @@ export default class LatexVaultPlugin extends Plugin {
     });
 
     this.registerEditorExtension(livePreviewExtension(this));
+
+    this.addCommand({
+      id: "clear-cache",
+      name: this.t("Clear LaTeX rendering cache"),
+      callback: async () => {
+        await this.renderer.clearCache();
+        new Notice(this.t("LaTeX cache cleared."));
+      },
+    });
+
+    this.addCommand({
+      id: "toggle-live-preview",
+      name: this.t("Toggle LaTeX live preview"),
+      callback: async () => {
+        this.settings.livePreview = !this.settings.livePreview;
+        await this.saveSettings();
+        this.refreshOpenViews();
+        new Notice(
+          this.settings.livePreview
+            ? this.t("LaTeX live preview enabled.")
+            : this.t("LaTeX live preview disabled.")
+        );
+      },
+    });
 
     this.registerMarkdownPostProcessor(
       async (el) => {
@@ -60,6 +98,28 @@ export default class LatexVaultPlugin extends Plugin {
 
   onunload(): void {
     this.renderer?.destroy();
+    if (typeof document !== "undefined" && document.body) {
+      document.body.classList.remove(...Object.values(DARK_MODE_CLASSES));
+    }
+  }
+
+  applyDarkModeClass(): void {
+    if (typeof document === "undefined" || !document.body) return;
+    document.body.classList.remove(...Object.values(DARK_MODE_CLASSES));
+    document.body.classList.add(DARK_MODE_CLASSES[this.settings.darkMode]);
+  }
+
+  refreshOpenViews(rerenderReading = false): void {
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (!(leaf.view instanceof MarkdownView)) return;
+      const cm = (leaf.view.editor as unknown as { cm?: EditorView })?.cm;
+      if (cm && typeof cm.dispatch === "function") {
+        cm.dispatch({ effects: recalcEffect.of(null) });
+      }
+      if (rerenderReading && leaf.view.previewMode) {
+        leaf.view.previewMode.rerender(true);
+      }
+    });
   }
 
   // Settings of the plugin, falling back to the data of the old "tikz-vault"
@@ -126,6 +186,7 @@ export default class LatexVaultPlugin extends Plugin {
 
 const VALID_LANGUAGES = new Set(["en", "it"]);
 const VALID_ENGINES = new Set(["auto", "pdf", "dvi"]);
+const VALID_DARK_MODES = new Set(["auto", "paper", "none"]);
 
 // Map pre-0.4 setting keys (tikzEngine, tikzLatexBin, ...) and validate every
 // field loaded from data.json so corrupted values cannot break runtime behavior.
@@ -171,6 +232,13 @@ export function migrateSettings(data: unknown): {
   if ("engine" in raw) {
     if (typeof raw.engine === "string" && VALID_ENGINES.has(raw.engine)) {
       out.engine = raw.engine as LatexSettings["engine"];
+    } else {
+      changed = true;
+    }
+  }
+  if ("darkMode" in raw) {
+    if (typeof raw.darkMode === "string" && VALID_DARK_MODES.has(raw.darkMode)) {
+      out.darkMode = raw.darkMode as LatexSettings["darkMode"];
     } else {
       changed = true;
     }

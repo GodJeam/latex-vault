@@ -33,6 +33,7 @@ try {
               });
               export class App {}
               export class Component {}
+              export class MarkdownView {}
               export class Notice {}
               export class Plugin {}
               export class PluginSettingTab {}

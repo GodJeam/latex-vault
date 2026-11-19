@@ -3,11 +3,13 @@ import type LatexVaultPlugin from "./main";
 import type { Language } from "./i18n";
 
 export type LatexEngine = "auto" | "pdf" | "dvi";
+export type DarkModeAdaptation = "auto" | "paper" | "none";
 
 export interface LatexSettings {
   language: Language;
   enabled: boolean;
   engine: LatexEngine;
+  darkMode: DarkModeAdaptation;
   latexBin: string;
   dvisvgmBin: string;
   extraPreamble: string;
@@ -19,6 +21,7 @@ export const DEFAULT_SETTINGS: LatexSettings = {
   language: "en",
   enabled: true,
   engine: "auto",
+  darkMode: "auto",
   latexBin: "",
   dvisvgmBin: "",
   extraPreamble: "",
@@ -39,7 +42,7 @@ export class LatexSettingTab extends PluginSettingTab {
     const t = (s: string) => this.plugin.t(s);
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: t("LaTeX rendering") });
+    new Setting(containerEl).setName(t("LaTeX rendering")).setHeading();
 
     new Setting(containerEl)
       .setName(t("Language"))
@@ -74,9 +77,9 @@ export class LatexSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName(t("Live preview in Edit mode"))
+      .setName(t("Live preview in edit mode"))
       .setDesc(t(
-        "Show the image also in Edit mode, below the code block. The preview updates automatically when the code changes."
+        "Show the image also in edit mode, below the code block. The preview updates automatically when the code changes."
       ))
       .addToggle((toggle) =>
         toggle
@@ -86,6 +89,26 @@ export class LatexSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    new Setting(containerEl)
+      .setName(t("Dark mode adaptation"))
+      .setDesc(t(
+        "How diagrams adapt in dark themes. 'Auto' inverts light/dark tones while preserving hues; 'Light paper' places diagrams on a white background."
+      ))
+      .addDropdown((dd) =>
+        dd
+          .addOption("auto", t("Auto (invert colors)"))
+          .addOption("paper", t("Light paper background"))
+          .addOption("none", t("None"))
+          .setValue(this.plugin.settings.darkMode)
+          .onChange(async (value) => {
+            this.plugin.settings.darkMode = value as DarkModeAdaptation;
+            await this.plugin.saveSettings();
+            this.plugin.applyDarkModeClass();
+          })
+      );
+
+    new Setting(containerEl).setName(t("TeX configuration")).setHeading();
 
     new Setting(containerEl)
       .setName(t("Rendering engine"))
@@ -161,6 +184,8 @@ export class LatexSettingTab extends PluginSettingTab {
             await this.plugin.renderer.clearCache();
           })
       );
+
+    new Setting(containerEl).setName(t("Maintenance")).setHeading();
 
     new Setting(containerEl)
       .setName(t("Test LaTeX rendering"))

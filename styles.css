@@ -6,10 +6,38 @@
   }
 }
 
+/* Shared container layout for Live Preview and Reading Mode */
+.latex-live,
+.latex-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  line-height: 0;
+  border-left: 3px solid var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
+}
+
+.latex-live {
+  margin: 0.1em 0;
+  padding: 6px 8px;
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+}
+
+.latex-result {
+  margin: 0.5em 0;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+}
+
 .latex-figure {
   width: 100%;
   overflow-x: auto;
   text-align: center;
+  line-height: 0;
 }
 
 .latex-figure svg {
@@ -19,10 +47,24 @@
   margin: 0 auto;
 }
 
+/* Dark theme adaptation modes */
+.theme-dark.latex-vault-dark-auto .latex-figure svg {
+  filter: invert(0.92) hue-rotate(180deg);
+}
+
+.theme-dark.latex-vault-dark-paper .latex-figure {
+  width: auto;
+  max-width: 100%;
+  padding: 10px 14px;
+  background: #ffffff;
+  border-radius: var(--radius-s);
+}
+
 .latex-status {
   color: var(--text-muted);
   font-size: var(--font-smaller);
   font-style: italic;
+  line-height: normal;
 }
 
 .latex-loading::before {
@@ -38,8 +80,7 @@
   animation: latex-spin 0.8s linear infinite;
 }
 
-/* In Edit mode the LaTeX code fence is hidden; the rendered image is shown and
-   the source code is available behind a closed toggle. */
+/* In Edit mode the LaTeX code fence is hidden while collapsed. */
 .cm-line.latex-code-hidden {
   display: none !important;
 }
@@ -72,77 +113,24 @@
   border-color: var(--interactive-accent);
 }
 
-.latex-live {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  margin: 0.1em 0;
-  padding: 6px 8px;
-  line-height: 0;
-  border-left: 3px solid var(--interactive-accent);
-  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
-  border-radius: 0 var(--radius-s) var(--radius-s) 0;
-}
-
-/* Contenitore in modalità Lettura (sostituisce il blocco di codice) */
-.latex-result {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  margin: 0.5em 0;
-  padding: 10px;
-  line-height: 0;
-  border: 1px solid var(--background-modifier-border);
-  border-left: 3px solid var(--interactive-accent);
-  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
-  border-radius: var(--radius-s);
-}
-
-.latex-result .latex-figure {
-  width: 100%;
-  overflow-x: auto;
-  text-align: center;
-  line-height: 0;
-}
-
-.latex-result .latex-figure svg {
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 0 auto;
-}
-
-/* Hide the broken image Obsidian shows for unrecognised latex-vault/tikz blocks */
+/* Hide the broken image Obsidian shows for unrecognised latex block tags */
 .block-language-latex-vault img[src*="invalid.site"],
 .block-language-latex-vault img[src*="img-not-found"],
 .block-language-tikz img[src*="invalid.site"],
-.block-language-tikz img[src*="img-not-found"] {
+.block-language-tikz img[src*="img-not-found"],
+.block-language-tikzcd img[src*="invalid.site"],
+.block-language-tikzcd img[src*="img-not-found"],
+.block-language-pgfplots img[src*="invalid.site"],
+.block-language-pgfplots img[src*="img-not-found"] {
   display: none !important;
 }
 
-.latex-live .latex-figure {
-  overflow-x: auto;
-  text-align: center;
-  line-height: 0;
-}
-
-.latex-live .latex-figure svg {
-  max-width: 100%;
-  height: auto;
-  display: block;
-  margin: 0 auto;
-}
-
-/* Error styling is shared by Reading and Edit mode (see .latex-error below). */
-
+/* Shared error box for Reading and Edit mode */
 .latex-error {
   width: 100%;
   color: var(--text-error);
   font-size: var(--font-smaller);
+  line-height: normal;
 }
 
 .latex-error-title {
