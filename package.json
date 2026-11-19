@@ -1,6 +1,6 @@
 {
   "name": "latex-vault",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "LaTeX rendering for Obsidian using a local TeX installation",
   "repository": "https://github.com/GodJeam/latex-vault",
   "main": "main.js",
