@@ -3,6 +3,7 @@ import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemir
 import type { EditorState } from "@codemirror/state";
 import { editorLivePreviewField, sanitizeHTMLToDom } from "obsidian";
 import type LatexVaultPlugin from "./main";
+import type { RenderOptions } from "./renderer";
 import { isClosingFence, isLatexOpeningFence, parseOpeningFence } from "./languages";
 
 export interface LatexBlock {
@@ -12,6 +13,10 @@ export interface LatexBlock {
   toLine: number;
   code: string;
 }
+
+// Delay live recompilation while the user is actively typing inside an expanded
+// code block, avoiding a process storm on every keystroke.
+export const LIVE_EDIT_DEBOUNCE_MS = 450;
 
 // The whole document is scanned for fences; cache the result per document
 // snapshot so selection updates do not rescan it on every keystroke.
@@ -65,8 +70,8 @@ export function findLatexBlocks(state: EditorState): LatexBlock[] {
   return blocks;
 }
 
-const expandEffect = StateEffect.define<number>();
-const collapseEffect = StateEffect.define<number>();
+export const expandEffect = StateEffect.define<number>();
+export const collapseEffect = StateEffect.define<number>();
 export const recalcEffect = StateEffect.define<null>();
 
 function isLivePreview(state: EditorState): boolean {
@@ -74,16 +79,20 @@ function isLivePreview(state: EditorState): boolean {
   return state.field(editorLivePreviewField, false) ?? true;
 }
 
-class LatexPreviewWidget extends WidgetType {
+export class LatexPreviewWidget extends WidgetType {
   private destroyed = false;
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private abortController: AbortController | null = null;
 
   constructor(
     readonly code: string,
-    private renderFn: (code: string) => Promise<string>,
+    private renderFn: (code: string, options?: RenderOptions) => Promise<string>,
     private getCachedFn: (code: string) => string | null,
     private t: (s: string) => string,
     readonly language: string,
-    readonly expanded: boolean
+    readonly expanded: boolean,
+    readonly configVersion: number,
+    private debounceMs = LIVE_EDIT_DEBOUNCE_MS
   ) {
     super();
   }
@@ -92,12 +101,19 @@ class LatexPreviewWidget extends WidgetType {
     return (
       other.code === this.code &&
       other.expanded === this.expanded &&
-      other.language === this.language
+      other.language === this.language &&
+      other.configVersion === this.configVersion
     );
   }
 
   updateDOM(dom: HTMLElement, _view: EditorView, prev: this): boolean {
-    if (prev.code !== this.code || dom.dataset.ready !== "1") return false;
+    if (
+      prev.code !== this.code ||
+      prev.configVersion !== this.configVersion ||
+      dom.dataset.ready !== "1"
+    ) {
+      return false;
+    }
     dom.dataset.expanded = this.expanded ? "1" : "0";
     const btn = dom.querySelector<HTMLButtonElement>(".latex-source-toggle");
     if (btn) {
@@ -140,11 +156,18 @@ class LatexPreviewWidget extends WidgetType {
         );
         if (!block) return;
         const isExpanded = wrap.dataset.expanded === "1";
-        currentView.dispatch({
-          effects: isExpanded
-            ? collapseEffect.of(block.from)
-            : expandEffect.of(block.from),
-        });
+        if (isExpanded) {
+          const sel = currentView.state.selection.main;
+          const insideBlock = sel.from >= block.from && sel.to <= block.to;
+          currentView.dispatch({
+            effects: collapseEffect.of(block.from),
+            ...(insideBlock ? { selection: { anchor: block.from } } : {}),
+          });
+        } else {
+          currentView.dispatch({
+            effects: expandEffect.of(block.from),
+          });
+        }
       });
       wrap.appendChild(btn);
     };
@@ -169,33 +192,61 @@ class LatexPreviewWidget extends WidgetType {
     status.textContent = this.t("Rendering LaTeX...");
     wrap.appendChild(status);
 
-    this.renderFn(this.code)
-      .then((svg) => {
-        if (this.destroyed) return;
-        showSvg(svg);
-      })
-      .catch((err) => {
-        if (this.destroyed) return;
-        wrap.replaceChildren();
-        const errBox = document.createElement("div");
-        errBox.className = "latex-error";
-        const title = document.createElement("div");
-        title.className = "latex-error-title";
-        title.textContent = this.t("LaTeX rendering error");
-        errBox.appendChild(title);
-        const pre = document.createElement("pre");
-        pre.className = "latex-error-msg";
-        pre.textContent = err instanceof Error ? err.message : String(err);
-        errBox.appendChild(pre);
-        wrap.appendChild(errBox);
-        appendToggle();
-      });
+    const startRender = () => {
+      if (this.destroyed) return;
+      const controller = new AbortController();
+      this.abortController = controller;
+      this.renderFn(this.code, { signal: controller.signal })
+        .then((svg) => {
+          if (this.destroyed || controller.signal.aborted) return;
+          showSvg(svg);
+        })
+        .catch((err) => {
+          if (
+            this.destroyed ||
+            controller.signal.aborted ||
+            (err instanceof Error && err.name === "AbortError")
+          ) {
+            return;
+          }
+          wrap.replaceChildren();
+          const errBox = document.createElement("div");
+          errBox.className = "latex-error";
+          const title = document.createElement("div");
+          title.className = "latex-error-title";
+          title.textContent = this.t("LaTeX rendering error");
+          errBox.appendChild(title);
+          const pre = document.createElement("pre");
+          pre.className = "latex-error-msg";
+          pre.textContent = err instanceof Error ? err.message : String(err);
+          errBox.appendChild(pre);
+          wrap.appendChild(errBox);
+          appendToggle();
+        });
+    };
+
+    if (this.expanded && this.debounceMs > 0) {
+      this.debounceTimer = setTimeout(() => {
+        this.debounceTimer = null;
+        startRender();
+      }, this.debounceMs);
+    } else {
+      startRender();
+    }
 
     return wrap;
   }
 
   destroy(): void {
     this.destroyed = true;
+    if (this.debounceTimer !== null) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.abortController) {
+      this.abortController.abort();
+      this.abortController = null;
+    }
   }
 
   ignoreEvent(): boolean {
@@ -212,29 +263,45 @@ function computeDecorations(
     return Decoration.none;
   }
   const builder = new RangeSetBuilder<Decoration>();
-  const render = (code: string) => plugin.renderer.render(code);
+  const render = (code: string, options?: RenderOptions) =>
+    plugin.renderer.render(code, options);
   const getCached = (code: string) => plugin.renderer.getCached(code);
   const t = (s: string) => plugin.t(s);
   const lang = plugin.settings.language;
+  const configVersion = plugin.renderConfigVersion ?? 0;
   try {
     for (const block of findLatexBlocks(state)) {
       const isExpanded = expanded.has(block.from);
-      // Hide the code fence lines unless the user expanded the block.
-      if (!isExpanded) {
-        for (let k = block.fromLine; k <= block.toLine; k++) {
-          const pos = state.doc.line(k).from;
-          builder.add(pos, pos, Decoration.line({ class: "latex-code-hidden" }));
-        }
-      }
-      builder.add(
-        block.to,
-        block.to,
-        Decoration.widget({
-          widget: new LatexPreviewWidget(block.code, render, getCached, t, lang, isExpanded),
-          block: true,
-          side: 1,
-        })
+      const widget = new LatexPreviewWidget(
+        block.code,
+        render,
+        getCached,
+        t,
+        lang,
+        isExpanded,
+        configVersion
       );
+      if (!isExpanded) {
+        // Atomic block replacement avoids invisible cursor traps inside hidden lines.
+        builder.add(
+          block.from,
+          block.to,
+          Decoration.replace({
+            widget,
+            block: true,
+          })
+        );
+      } else {
+        builder.add(
+          block.to,
+          block.to,
+          Decoration.widget({
+            widget,
+            block: true,
+            side: 1,
+          })
+        );
+      }
     }
   } catch (e) {
     console.error("latex-vault: error building LaTeX decorations:", e);

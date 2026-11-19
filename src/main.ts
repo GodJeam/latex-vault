@@ -20,6 +20,7 @@ const DARK_MODE_CLASSES: Record<DarkModeAdaptation, string> = {
 export default class LatexVaultPlugin extends Plugin {
   settings!: LatexSettings;
   renderer!: LatexRenderer;
+  renderConfigVersion = 0;
 
   async onload(): Promise<void> {
     const { data, fromLegacyPlugin } = await this.loadLegacyAwareData();
@@ -44,6 +45,7 @@ export default class LatexVaultPlugin extends Plugin {
       name: this.t("Clear LaTeX rendering cache"),
       callback: async () => {
         await this.renderer.clearCache();
+        this.bumpRenderConfig(true);
         new Notice(this.t("LaTeX cache cleared."));
       },
     });
@@ -107,6 +109,11 @@ export default class LatexVaultPlugin extends Plugin {
     if (typeof document === "undefined" || !document.body) return;
     document.body.classList.remove(...Object.values(DARK_MODE_CLASSES));
     document.body.classList.add(DARK_MODE_CLASSES[this.settings.darkMode]);
+  }
+
+  bumpRenderConfig(rerenderReading = false): void {
+    this.renderConfigVersion++;
+    this.refreshOpenViews(rerenderReading);
   }
 
   refreshOpenViews(rerenderReading = false): void {

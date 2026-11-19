@@ -57,6 +57,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.language = value as Language;
             await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews(true);
             new Notice(t("Language changed. Reload Obsidian to apply it everywhere."));
             this.display();
           })
@@ -73,6 +74,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.enabled = value;
             await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews(true);
           })
       );
 
@@ -87,6 +89,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.livePreview = value;
             await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
           })
       );
 
@@ -124,6 +127,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.engine = value as LatexEngine;
             await this.plugin.saveSettings();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
@@ -138,6 +142,7 @@ export class LatexSettingTab extends PluginSettingTab {
             this.plugin.settings.latexBin = value.trim();
             this.plugin.renderer.invalidateBinCache();
             await this.plugin.saveSettings();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
@@ -152,6 +157,7 @@ export class LatexSettingTab extends PluginSettingTab {
             this.plugin.settings.dvisvgmBin = value.trim();
             this.plugin.renderer.invalidateBinCache();
             await this.plugin.saveSettings();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
@@ -167,6 +173,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.extraPreamble = value;
             await this.plugin.saveSettings();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
@@ -182,6 +189,7 @@ export class LatexSettingTab extends PluginSettingTab {
             this.plugin.settings.shellEscape = value;
             await this.plugin.saveSettings();
             await this.plugin.renderer.clearCache();
+            this.plugin.bumpRenderConfig(true);
           })
       );
 
@@ -216,6 +224,7 @@ export class LatexSettingTab extends PluginSettingTab {
           btn.setDisabled(true);
           try {
             await this.plugin.renderer.clearCache();
+            this.plugin.bumpRenderConfig(true);
             new Notice(t("LaTeX cache cleared."));
           } finally {
             btn.setDisabled(false);

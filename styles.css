@@ -80,11 +80,6 @@
   animation: latex-spin 0.8s linear infinite;
 }
 
-/* In Edit mode the LaTeX code fence is hidden while collapsed. */
-.cm-line.latex-code-hidden {
-  display: none !important;
-}
-
 /* Hide Code Styler's header for LaTeX blocks (its fold toggle cannot be
    driven from another plugin and would appear "open" while the code is
    hidden). */
