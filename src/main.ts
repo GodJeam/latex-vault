@@ -12,7 +12,7 @@ export default class LatexVaultPlugin extends Plugin {
   async onload(): Promise<void> {
     const { data, fromLegacyPlugin } = await this.loadLegacyAwareData();
     const { settings: migrated, changed } = migrateSettings(data);
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, migrated);
+    this.settings = migrated;
     if (fromLegacyPlugin || changed) {
       await this.saveSettings();
     }
@@ -124,15 +124,21 @@ export default class LatexVaultPlugin extends Plugin {
   }
 }
 
-// Map the pre-0.4 setting keys (tikzEngine, tikzLatexBin, ...) to the new ones.
-export function migrateSettings(data: Record<string, unknown> | null): {
-  settings: Partial<LatexSettings>;
+const VALID_LANGUAGES = new Set(["en", "it"]);
+const VALID_ENGINES = new Set(["auto", "pdf", "dvi"]);
+
+// Map pre-0.4 setting keys (tikzEngine, tikzLatexBin, ...) and validate every
+// field loaded from data.json so corrupted values cannot break runtime behavior.
+export function migrateSettings(data: unknown): {
+  settings: LatexSettings;
   changed: boolean;
 } {
-  if (!data) return { settings: {}, changed: false };
-  const out: Record<string, unknown> = { ...data };
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { settings: { ...DEFAULT_SETTINGS }, changed: data !== null && data !== undefined };
+  }
+  const raw: Record<string, unknown> = { ...(data as Record<string, unknown>) };
   let changed = false;
-  const keys: Record<string, string> = {
+  const legacyKeys: Record<string, string> = {
     tikzEnabled: "enabled",
     tikzEngine: "engine",
     tikzLatexBin: "latexBin",
@@ -141,12 +147,59 @@ export function migrateSettings(data: Record<string, unknown> | null): {
     tikzLivePreview: "livePreview",
     tikzShellEscape: "shellEscape",
   };
-  for (const [oldKey, newKey] of Object.entries(keys)) {
-    if (oldKey in out) {
-      if (!(newKey in out)) out[newKey] = out[oldKey];
-      delete out[oldKey];
+  for (const [oldKey, newKey] of Object.entries(legacyKeys)) {
+    if (oldKey in raw) {
+      if (!(newKey in raw)) raw[newKey] = raw[oldKey];
+      delete raw[oldKey];
       changed = true;
     }
   }
-  return { settings: out as Partial<LatexSettings>, changed };
+
+  const out: LatexSettings = { ...DEFAULT_SETTINGS };
+  const knownKeys = new Set<string>(Object.keys(DEFAULT_SETTINGS));
+  for (const k of Object.keys(raw)) {
+    if (!knownKeys.has(k)) changed = true;
+  }
+
+  if ("language" in raw) {
+    if (typeof raw.language === "string" && VALID_LANGUAGES.has(raw.language)) {
+      out.language = raw.language as LatexSettings["language"];
+    } else {
+      changed = true;
+    }
+  }
+  if ("engine" in raw) {
+    if (typeof raw.engine === "string" && VALID_ENGINES.has(raw.engine)) {
+      out.engine = raw.engine as LatexSettings["engine"];
+    } else {
+      changed = true;
+    }
+  }
+  for (const key of ["enabled", "livePreview", "shellEscape"] as const) {
+    if (key in raw) {
+      if (typeof raw[key] === "boolean") {
+        out[key] = raw[key] as boolean;
+      } else {
+        changed = true;
+      }
+    }
+  }
+  for (const key of ["latexBin", "dvisvgmBin"] as const) {
+    if (key in raw) {
+      if (typeof raw[key] === "string" && !(raw[key] as string).includes("\0")) {
+        out[key] = (raw[key] as string).trim();
+      } else {
+        changed = true;
+      }
+    }
+  }
+  if ("extraPreamble" in raw) {
+    if (typeof raw.extraPreamble === "string") {
+      out.extraPreamble = raw.extraPreamble;
+    } else {
+      changed = true;
+    }
+  }
+
+  return { settings: out, changed };
 }

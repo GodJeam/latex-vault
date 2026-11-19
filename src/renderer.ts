@@ -294,11 +294,86 @@ export function buildTexSource(code: string, extraPreamble: string): string {
   return parts.join("\n");
 }
 
-export function cleanSvg(svg: string): string {
+export function scopeSvgIds(svg: string, prefix: string): string {
+  if (!prefix) return svg;
+  const ids = new Set<string>();
+  for (const tagMatch of svg.matchAll(/<[a-zA-Z][^>]*>/g)) {
+    for (const idMatch of tagMatch[0].matchAll(/\sid=(["'])([^"']+)\1/g)) {
+      if (!idMatch[2].startsWith(prefix)) ids.add(idMatch[2]);
+    }
+  }
+  if (ids.size === 0) return svg;
+
+  const rewriteId = (id: string) => (ids.has(id) ? `${prefix}${id}` : id);
+
   return svg
+    .replace(
+      /(<[a-zA-Z][^>]*?\s)id=(["'])([^"']+)\2/g,
+      (_m, head: string, quote: string, id: string) =>
+        `${head}id=${quote}${rewriteId(id)}${quote}`
+    )
+    .replace(
+      /(\s(?:xlink:)?href=)(["'])#([^"']+)\2/g,
+      (_m, attr: string, quote: string, id: string) =>
+        `${attr}${quote}#${rewriteId(id)}${quote}`
+    )
+    .replace(
+      /url\(\s*(["']?)#([^)"'\s]+)\1\s*\)/g,
+      (_m, quote: string, id: string) => `url(${quote}#${rewriteId(id)}${quote})`
+    );
+}
+
+export function cleanSvg(svg: string, idPrefix?: string): string {
+  const stripped = svg
     .replace(/^\s*<\?xml[^>]*\?>\s*/, "")
     .replace(/^(?:\s*<!--[\s\S]*?-->\s*)+/, "")
     .trim();
+  return idPrefix ? scopeSvgIds(stripped, idPrefix) : stripped;
+}
+
+/**
+ * Ensure a cache directory exists with owner-only permissions (0700) and is
+ * neither a symbolic link nor owned by another user.
+ */
+export async function ensurePrivateTempDir(dir: string): Promise<void> {
+  await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
+  const st = await fsp.lstat(dir);
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    throw new Error(`Unsafe cache directory path: ${dir}`);
+  }
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) {
+    throw new Error(`Cache directory not owned by current user: ${dir}`);
+  }
+  await fsp.chmod(dir, 0o700).catch(() => {});
+}
+
+/** Restrict a cached file to its owner (best effort on non-POSIX systems). */
+export async function restrictFilePermissions(path: string): Promise<void> {
+  await fsp.chmod(path, 0o600).catch(() => {});
+}
+
+/**
+ * Resolve the executable and argument vector for spawning a TeX tool without
+ * invoking a shell. Rejects `.cmd`/`.bat` launchers on Windows because running
+ * them requires `cmd.exe` shell interpretation.
+ */
+export function resolveSpawnCommand(
+  bin: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform
+): { command: string; args: string[] } {
+  const lower = bin.toLowerCase();
+  if (platform === "win32") {
+    if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
+      throw new Error(
+        `Windows .cmd/.bat launchers cannot be run safely (${bin}); point the setting to the native .exe binary instead.`
+      );
+    }
+    if (/\.(m?js|cjs)$/i.test(bin)) {
+      return { command: process.execPath, args: [bin, ...args] };
+    }
+  }
+  return { command: bin, args };
 }
 
 function isZeroOpacity(val: string | undefined): boolean {
@@ -443,7 +518,11 @@ export class LatexRenderer {
 
   constructor(plugin: RendererHost, options?: RendererOptions) {
     this.plugin = plugin;
-    this.cacheDir = options?.cacheDir ?? join(tmpdir(), "latex-vault-render");
+    const defaultDirName =
+      typeof process.getuid === "function"
+        ? `latex-vault-render-${process.getuid()}`
+        : "latex-vault-render";
+    this.cacheDir = options?.cacheDir ?? join(tmpdir(), defaultDirName);
     const defaultConcurrency = Math.min(
       4,
       Math.max(1, Math.floor((cpus().length || 2) / 2))
@@ -510,7 +589,7 @@ export class LatexRenderer {
     const memoized = this.memoGet(hash);
     if (memoized !== null) return memoized;
 
-    const cached = await this.readCache(svgFile);
+    const cached = await this.readCache(svgFile, hash);
     if (signal?.aborted) throw makeAbortError();
     if (cached !== null) {
       this.memoSet(hash, cached);
@@ -520,7 +599,7 @@ export class LatexRenderer {
     let entry = this.inFlight.get(hash);
     if (!entry) {
       const controller = new AbortController();
-      const promise = this.doRender(tex, svgFile, s, controller.signal)
+      const promise = this.doRender(tex, hash, svgFile, s, controller.signal)
         .then((svg) => {
           this.memoSet(hash, svg);
           return svg;
@@ -622,7 +701,7 @@ export class LatexRenderer {
 
   // Read a cached SVG asynchronously so the UI thread is not blocked. A stale
   // blank SVG (broken dvisvgm output) is discarded so it gets re-rendered.
-  private async readCache(svgFile: string): Promise<string | null> {
+  private async readCache(svgFile: string, hash: string): Promise<string | null> {
     let cached: string;
     try {
       cached = await fsp.readFile(svgFile, "utf8");
@@ -636,11 +715,12 @@ export class LatexRenderer {
     // Refresh mtime on hit so active diagrams do not expire as stale.
     const now = new Date();
     void fsp.utimes(svgFile, now, now).catch(() => {});
-    return cleanSvg(cached);
+    return cleanSvg(cached, `lv-${hash.slice(0, 8)}-`);
   }
 
   private async doRender(
     tex: string,
+    hash: string,
     cacheSvgFile: string,
     s: LatexSettings,
     signal: AbortSignal
@@ -695,9 +775,11 @@ export class LatexRenderer {
         );
       }
 
-      await fsp.mkdir(this.cacheDir, { recursive: true });
+      await ensurePrivateTempDir(this.cacheDir);
       buildDir = await fsp.mkdtemp(join(this.cacheDir, ".build-"));
-      await fsp.writeFile(join(buildDir, "main.tex"), tex, "utf8");
+      await fsp.chmod(buildDir, 0o700).catch(() => {});
+      const texFile = join(buildDir, "main.tex");
+      await fsp.writeFile(texFile, tex, { encoding: "utf8", mode: 0o600 });
       const outSvgFile = join(buildDir, "main.svg");
 
       const errors: string[] = [];
@@ -720,7 +802,7 @@ export class LatexRenderer {
               `dvisvgm produced an empty SVG (all strokes/fills are transparent, engine ${engine.label})`
             );
           }
-          const cleaned = cleanSvg(svg);
+          const cleaned = cleanSvg(svg, `lv-${hash.slice(0, 8)}-`);
           await this.writeCacheAtomic(cacheSvgFile, cleaned);
           return cleaned;
         } catch (e) {
@@ -746,7 +828,8 @@ export class LatexRenderer {
   private async writeCacheAtomic(targetFile: string, content: string): Promise<void> {
     const tmpFile = `${targetFile}.${process.pid}.${Date.now()}.tmp`;
     try {
-      await fsp.writeFile(tmpFile, content, "utf8");
+      await fsp.writeFile(tmpFile, content, { encoding: "utf8", mode: 0o600 });
+      await restrictFilePermissions(tmpFile);
       await fsp.rename(tmpFile, targetFile);
     } catch {
       await fsp.rm(tmpFile, { force: true }).catch(() => {});
@@ -762,12 +845,16 @@ export class LatexRenderer {
       return true;
     }
     const detected = await new Promise<boolean>((resolve) => {
-      const isJs = process.platform === "win32" && /\.(m?js|cjs)$/i.test(bin);
-      const spawnBin = isJs ? process.execPath : bin;
-      const spawnArgs = isJs ? [bin, "--version"] : ["--version"];
+      let spawnSpec: { command: string; args: string[] };
+      try {
+        spawnSpec = resolveSpawnCommand(bin, ["--version"]);
+      } catch {
+        resolve(false);
+        return;
+      }
       execFile(
-        spawnBin,
-        spawnArgs,
+        spawnSpec.command,
+        spawnSpec.args,
         { windowsHide: true, timeout: 5000, env: process.env },
         (_err, stdout, stderr) => {
           resolve(/miktex/i.test(`${stdout ?? ""}\n${stderr ?? ""}`));
@@ -816,7 +903,7 @@ export class LatexRenderer {
     this.memo.clear();
     try {
       await fsp.rm(this.cacheDir, { recursive: true, force: true });
-      await fsp.mkdir(this.cacheDir, { recursive: true });
+      await ensurePrivateTempDir(this.cacheDir);
     } catch {
       // ignore
     }
@@ -827,6 +914,9 @@ export class LatexRenderer {
   async cleanupCache(): Promise<void> {
     let names: string[];
     try {
+      const dirStat = await fsp.lstat(this.cacheDir);
+      if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
+      if (typeof process.getuid === "function" && dirStat.uid !== process.getuid()) return;
       names = await fsp.readdir(this.cacheDir);
     } catch {
       return;
@@ -941,7 +1031,7 @@ export class LatexRenderer {
 
   private findInPath(name: string): string | null {
     const isWin = process.platform === "win32";
-    const exts = isWin ? [".exe", ".cmd", ".bat"] : [""];
+    const exts = isWin ? [".exe"] : [""];
     const pathDirs = (process.env.PATH ?? "").split(isWin ? ";" : ":").filter(Boolean);
     const dirs = Array.from(new Set([...pathDirs, ...getFallbackTexDirs()]));
     for (const dir of dirs) {
@@ -960,26 +1050,22 @@ export class LatexRenderer {
     signal?: AbortSignal
   ): Promise<void> {
     if (signal?.aborted) return Promise.reject(makeAbortError());
-    const lower = bin.toLowerCase();
-    const isJsOnWin = process.platform === "win32" && /\.(m?js|cjs)$/i.test(bin);
-    const spawnBin = isJsOnWin ? process.execPath : bin;
-    const spawnArgs = isJsOnWin ? [bin, ...args] : args;
-    // .cmd/.bat cannot be launched by execFile on Windows without a shell.
-    const shell =
-      !isJsOnWin &&
-      process.platform === "win32" &&
-      (lower.endsWith(".cmd") || lower.endsWith(".bat"));
+    let spawnSpec: { command: string; args: string[] };
+    try {
+      spawnSpec = resolveSpawnCommand(bin, args);
+    } catch (e) {
+      return Promise.reject(e);
+    }
     return new Promise((resolve, reject) => {
       const child = execFile(
-        spawnBin,
-        spawnArgs,
+        spawnSpec.command,
+        spawnSpec.args,
         {
           cwd,
           windowsHide: true,
           timeout: EXEC_TIMEOUT_MS,
           maxBuffer: EXEC_MAX_BUFFER_BYTES,
           env: process.env,
-          shell,
           signal,
         },
         (error, stdout, stderr) => {
