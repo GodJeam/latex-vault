@@ -81,10 +81,17 @@ function isLivePreview(state: EditorState): boolean {
   return state.field(editorLivePreviewField, false) ?? true;
 }
 
+interface WidgetMountState {
+  destroyed: boolean;
+  debounceTimer: ReturnType<typeof setTimeout> | null;
+  abortController: AbortController | null;
+}
+
 export class LatexPreviewWidget extends WidgetType {
-  private destroyed = false;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private abortController: AbortController | null = null;
+  // CodeMirror 6 can unmount a widget (destroy) and later remount the exact
+  // same WidgetType instance (toDOM) as it leaves and re-enters the viewport,
+  // or mount it in multiple views simultaneously. Track lifecycle per DOM node.
+  private mounts = new WeakMap<HTMLElement, WidgetMountState>();
 
   constructor(
     readonly code: string,
@@ -134,6 +141,13 @@ export class LatexPreviewWidget extends WidgetType {
     const wrap = document.createElement("div");
     wrap.className = "latex-live";
     wrap.dataset.expanded = this.expanded ? "1" : "0";
+
+    const mount: WidgetMountState = {
+      destroyed: false,
+      debounceTimer: null,
+      abortController: null,
+    };
+    this.mounts.set(wrap, mount);
 
     const appendToggle = () => {
       wrap.dataset.ready = "1";
@@ -188,18 +202,21 @@ export class LatexPreviewWidget extends WidgetType {
     wrap.appendChild(createLoadingStatus(this.t("Rendering LaTeX...")));
 
     const startRender = () => {
-      if (this.destroyed) return;
-      const controller = new AbortController();
-      this.abortController = controller;
-      this.renderFn(this.code, { signal: controller.signal })
+      if (mount.destroyed) return;
+      // Only abort in-flight compilation on unmount when editing an expanded
+      // block; collapsed blocks scrolled temporarily out of the viewport can
+      // finish into cache so scrolling back displays them immediately.
+      const controller = this.expanded ? new AbortController() : null;
+      mount.abortController = controller;
+      this.renderFn(this.code, controller ? { signal: controller.signal } : undefined)
         .then((svg) => {
-          if (this.destroyed || controller.signal.aborted) return;
+          if (mount.destroyed || controller?.signal.aborted) return;
           showSvg(svg);
         })
         .catch((err) => {
           if (
-            this.destroyed ||
-            controller.signal.aborted ||
+            mount.destroyed ||
+            controller?.signal.aborted ||
             (err instanceof Error && err.name === "AbortError")
           ) {
             return;
@@ -210,8 +227,8 @@ export class LatexPreviewWidget extends WidgetType {
     };
 
     if (this.expanded && this.debounceMs > 0) {
-      this.debounceTimer = setTimeout(() => {
-        this.debounceTimer = null;
+      mount.debounceTimer = setTimeout(() => {
+        mount.debounceTimer = null;
         startRender();
       }, this.debounceMs);
     } else {
@@ -221,16 +238,19 @@ export class LatexPreviewWidget extends WidgetType {
     return wrap;
   }
 
-  destroy(): void {
-    this.destroyed = true;
-    if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
+  destroy(dom: HTMLElement): void {
+    const mount = this.mounts.get(dom);
+    if (!mount) return;
+    mount.destroyed = true;
+    if (mount.debounceTimer !== null) {
+      clearTimeout(mount.debounceTimer);
+      mount.debounceTimer = null;
     }
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
+    if (mount.abortController) {
+      mount.abortController.abort();
+      mount.abortController = null;
     }
+    this.mounts.delete(dom);
   }
 
   ignoreEvent(): boolean {

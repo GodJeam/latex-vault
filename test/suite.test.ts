@@ -764,9 +764,9 @@ test("LatexPreviewWidget debounces expanded edits and cancels pending timer on d
       0,
       60
     );
-    w1.toDOM(fakeView);
+    const dom1 = w1.toDOM(fakeView);
     await new Promise((r) => setTimeout(r, 20));
-    w1.destroy();
+    w1.destroy(dom1);
     await new Promise((r) => setTimeout(r, 70));
     assert.equal(calls, 0);
 
@@ -781,14 +781,15 @@ test("LatexPreviewWidget debounces expanded edits and cancels pending timer on d
       0,
       30
     );
-    w2.toDOM(fakeView);
+    const dom2 = w2.toDOM(fakeView);
     await new Promise((r) => setTimeout(r, 60));
     assert.equal(calls, 1);
     assert.ok(lastSignal instanceof AbortSignal);
-    w2.destroy();
+    w2.destroy(dom2);
     assert.equal(lastSignal.aborted, true);
 
-    // Collapsed widget renders immediately without debounce delay
+    // Collapsed widget renders immediately and remounts cleanly after CodeMirror
+    // virtualization calls destroy(dom) followed by toDOM() on the same instance.
     const w3 = new LatexPreviewWidget(
       "\\draw (1,1);",
       renderFn,
@@ -799,9 +800,15 @@ test("LatexPreviewWidget debounces expanded edits and cancels pending timer on d
       0,
       200
     );
-    w3.toDOM(fakeView);
+    const dom3a = w3.toDOM(fakeView);
     assert.equal(calls, 2);
-    w3.destroy();
+    w3.destroy(dom3a);
+
+    const dom3b = w3.toDOM(fakeView) as unknown as { dataset: Record<string, string> };
+    assert.equal(calls, 3);
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(dom3b.dataset.ready, "1");
+    w3.destroy(dom3b as unknown as HTMLElement);
   } finally {
     if (prevDocument === undefined) {
       delete (globalThis as unknown as { document?: unknown }).document;
