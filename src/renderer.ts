@@ -12,6 +12,12 @@ export interface RendererHost {
 
 export interface RenderOptions {
   signal?: AbortSignal;
+  bypassCache?: boolean;
+}
+
+export interface RenderResult {
+  svg: string;
+  engine: string;
 }
 
 export interface RendererOptions {
@@ -576,6 +582,28 @@ export class LatexRenderer {
     }
   }
 
+  /**
+   * Run a fresh, uncached render after resetting the binary lookup cache.
+   * Used by the Settings "Test" button so broken paths or engine changes are
+   * always verified against the real TeX installation.
+   */
+  async testRender(code: string, signal?: AbortSignal): Promise<RenderResult> {
+    if (this.disposed) throw makeAbortError();
+    if (signal?.aborted) throw makeAbortError();
+    this.invalidateBinCache();
+    const s = this.plugin.settings;
+    const tex = buildTexSource(code, s.extraPreamble);
+    const hash = this.computeHash(tex, s);
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      return await this.doRender(tex, hash, null, s, controller.signal);
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
   async render(code: string, options?: RenderOptions): Promise<string> {
     if (this.disposed) throw makeAbortError();
     const signal = options?.signal;
@@ -584,6 +612,19 @@ export class LatexRenderer {
     const s = this.plugin.settings;
     const tex = buildTexSource(code, s.extraPreamble);
     const hash = this.computeHash(tex, s);
+
+    if (options?.bypassCache) {
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      try {
+        const res = await this.doRender(tex, hash, null, s, controller.signal);
+        return res.svg;
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+      }
+    }
+
     const svgFile = join(this.cacheDir, `${hash}.svg`);
 
     const memoized = this.memoGet(hash);
@@ -600,9 +641,9 @@ export class LatexRenderer {
     if (!entry) {
       const controller = new AbortController();
       const promise = this.doRender(tex, hash, svgFile, s, controller.signal)
-        .then((svg) => {
-          this.memoSet(hash, svg);
-          return svg;
+        .then((res) => {
+          this.memoSet(hash, res.svg);
+          return res.svg;
         })
         .finally(() => {
           this.inFlight.delete(hash);
@@ -721,10 +762,10 @@ export class LatexRenderer {
   private async doRender(
     tex: string,
     hash: string,
-    cacheSvgFile: string,
+    cacheSvgFile: string | null,
     s: LatexSettings,
     signal: AbortSignal
-  ): Promise<string> {
+  ): Promise<RenderResult> {
     await this.acquireSlot(signal);
     let buildDir: string | null = null;
     try {
@@ -803,8 +844,10 @@ export class LatexRenderer {
             );
           }
           const cleaned = cleanSvg(svg, `lv-${hash.slice(0, 8)}-`);
-          await this.writeCacheAtomic(cacheSvgFile, cleaned);
-          return cleaned;
+          if (cacheSvgFile) {
+            await this.writeCacheAtomic(cacheSvgFile, cleaned);
+          }
+          return { svg: cleaned, engine: engine.label };
         } catch (e) {
           if (signal.aborted || (e instanceof Error && e.name === "AbortError")) {
             throw makeAbortError();

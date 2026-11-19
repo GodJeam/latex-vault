@@ -113,6 +113,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.latexBin)
           .onChange(async (value) => {
             this.plugin.settings.latexBin = value.trim();
+            this.plugin.renderer.invalidateBinCache();
             await this.plugin.saveSettings();
           })
       );
@@ -126,6 +127,7 @@ export class LatexSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.dvisvgmBin)
           .onChange(async (value) => {
             this.plugin.settings.dvisvgmBin = value.trim();
+            this.plugin.renderer.invalidateBinCache();
             await this.plugin.saveSettings();
           })
       );
@@ -162,16 +164,16 @@ export class LatexSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t("Test LaTeX rendering"))
-      .setDesc(t("Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration."))
+      .setDesc(t("Runs a fresh uncached test diagram to verify your TeX and dvisvgm binaries."))
       .addButton((btn) =>
         btn.setButtonText(t("Test")).onClick(async () => {
           btn.setDisabled(true);
           btn.setButtonText(t("Rendering..."));
           try {
-            await this.plugin.renderer.render(
-              "\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}\n\\usepackage[siunitx]{circuitikz}\n\\usetikzlibrary{positioning, arrows.meta}\n\\begin{tikzpicture}\n\\draw (0,0) to[R=1k] (3,0);\n\\node[draw, right=1cm of {(3,0)}] (b) {OK};\n\\draw[-{Stealth}] (3,0) -- (b);\n\\end{tikzpicture}"
+            const { engine } = await this.plugin.renderer.testRender(
+              "\\usetikzlibrary{arrows.meta}\n\\begin{tikzpicture}\n\\draw[thick,-{Stealth}] (0,0) -- (2.5,0);\n\\node[draw, rounded corners] at (3.2,0) {$\\text{OK}$};\n\\end{tikzpicture}"
             );
-            new Notice(t("LaTeX rendering succeeded: the TeX configuration works."));
+            new Notice(`${t("LaTeX rendering succeeded:")} ${engine}`);
           } catch (e) {
             new Notice(`${t("LaTeX rendering error:")} ${(e as Error).message}`);
           } finally {

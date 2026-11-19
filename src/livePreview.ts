@@ -3,9 +3,7 @@ import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemir
 import type { EditorState } from "@codemirror/state";
 import { editorLivePreviewField, sanitizeHTMLToDom } from "obsidian";
 import type LatexVaultPlugin from "./main";
-import { FENCE_RE } from "./languages";
-
-const CLOSING_FENCE = /^```\s*$/;
+import { isClosingFence, isLatexOpeningFence, parseOpeningFence } from "./languages";
 
 export interface LatexBlock {
   from: number;
@@ -19,36 +17,47 @@ export interface LatexBlock {
 // snapshot so selection updates do not rescan it on every keystroke.
 const blockCache = new WeakMap<object, LatexBlock[]>();
 
+const MAX_BLOCK_LINES = 5000;
+
 export function findLatexBlocks(state: EditorState): LatexBlock[] {
   const cached = blockCache.get(state.doc);
   if (cached) return cached;
   const blocks: LatexBlock[] = [];
   const doc = state.doc;
 
-  for (let n = 1; n <= doc.lines; n++) {
-    const line = doc.line(n);
-    if (!FENCE_RE.test(line.text.trim())) continue;
+  let activeFence: { char: "`" | "~"; len: number; isLatex: boolean; fromLine: number } | null =
+    null;
 
-    let closeLine = 0;
-    for (let k = n + 1; k <= doc.lines; k++) {
-      const l = doc.line(k);
-      if (CLOSING_FENCE.test(l.text.trim())) {
-        closeLine = k;
-        break;
+  for (let n = 1; n <= doc.lines; n++) {
+    const text = doc.line(n).text;
+
+    if (!activeFence) {
+      const open = parseOpeningFence(text);
+      if (open) {
+        activeFence = {
+          char: open.char,
+          len: open.len,
+          isLatex: open.isLatex,
+          fromLine: n,
+        };
       }
-      if (k - n > 5000) break;
+      continue;
     }
 
-    if (closeLine) {
-      const from = doc.line(n).from;
-      const to = doc.line(closeLine).to;
-      const codeLines: string[] = [];
-      for (let x = n + 1; x < closeLine; x++) {
-        codeLines.push(doc.line(x).text);
+    if (isClosingFence(text, activeFence.char, activeFence.len)) {
+      if (activeFence.isLatex && n - activeFence.fromLine <= MAX_BLOCK_LINES) {
+        const from = doc.line(activeFence.fromLine).from;
+        const to = doc.line(n).to;
+        const codeLines: string[] = [];
+        for (let x = activeFence.fromLine + 1; x < n; x++) {
+          codeLines.push(doc.line(x).text);
+        }
+        const code = codeLines.join("\n").trim();
+        if (code) {
+          blocks.push({ from, to, fromLine: activeFence.fromLine, toLine: n, code });
+        }
       }
-      const code = codeLines.join("\n").trim();
-      if (code) blocks.push({ from, to, fromLine: n, toLine: closeLine, code });
-      n = closeLine;
+      activeFence = null;
     }
   }
 
@@ -253,7 +262,7 @@ export function livePreviewExtension(plugin: LatexVaultPlugin) {
         const mapped = tr.changes.mapPos(pos, 1);
         if (
           mapped <= tr.state.doc.length &&
-          FENCE_RE.test(tr.state.doc.lineAt(mapped).text.trim())
+          isLatexOpeningFence(tr.state.doc.lineAt(mapped).text)
         ) {
           expanded.add(mapped);
         }

@@ -37,12 +37,11 @@ export const IT_TRANSLATIONS: Record<string, string> = {
   "Required by packages that run external programs, such as minted (needs Pygments). Security risk: code blocks can execute commands on your system. Enable only for trusted vaults.":
     "Necessario per pacchetti che eseguono programmi esterni, come minted (richiede Pygments). Rischio di sicurezza: i blocchi di codice possono eseguire comandi sul sistema. Abilitalo solo per vault fidati.",
   "Test LaTeX rendering": "Testa rendering LaTeX",
-  "Runs a test diagram with pgfplots, circuitikz and libraries to verify the configuration.":
-    "Esegue un diagramma di prova con pgfplots, circuitikz e librerie per verificare la configurazione.",
+  "Runs a fresh uncached test diagram to verify your TeX and dvisvgm binaries.":
+    "Esegue un diagramma di prova senza cache per verificare i binari TeX e dvisvgm.",
   "Test": "Test",
   "Rendering...": "Rendering in corso...",
-  "LaTeX rendering succeeded: the TeX configuration works.":
-    "Rendering LaTeX riuscito: la configurazione TeX funziona.",
+  "LaTeX rendering succeeded:": "Rendering LaTeX riuscito:",
   "LaTeX rendering error:": "Errore rendering LaTeX:",
   "Clear rendering cache": "Svuota cache rendering",
   "Deletes the already compiled SVGs (useful after preamble changes or to free space).":
