@@ -12,7 +12,9 @@ import {
   buildTexSource,
   cleanSvg,
   ensurePrivateTempDir,
+  extractLatexErrorTail,
   isBlankSvg,
+  needsLatexRerun,
   resolveConfiguredLatexBin,
   resolveSpawnCommand,
   restrictFilePermissions,
@@ -24,7 +26,14 @@ import {
 } from "../src/renderer";
 import { DEFAULT_SETTINGS, type LatexSettings } from "../src/settings";
 import { migrateSettings } from "../src/main";
-import { findLatexBlocks, livePreviewExtension } from "../src/livePreview";
+import {
+  LatexPreviewWidget,
+  collapseEffect,
+  expandEffect,
+  findLatexBlocks,
+  livePreviewExtension,
+  recalcEffect,
+} from "../src/livePreview";
 import { IT_TRANSLATIONS, translate, type TranslationKey } from "../src/i18n";
 
 const MOCK_TEX_BIN = resolve(process.cwd(), "test", "mock-tex.mjs");
@@ -320,7 +329,7 @@ test("livePreviewExtension respects editorLivePreviewField (Source Mode)", () =>
 // --- i18n parity ---
 
 test("every UI translation key used in src/ has an Italian entry and no stale keys exist", () => {
-  const files = ["src/main.ts", "src/settings.ts", "src/renderer.ts", "src/livePreview.ts"];
+  const files = ["src/main.ts", "src/settings.ts", "src/renderer.ts", "src/livePreview.ts", "src/ui.ts"];
   const used = new Set<string>();
   for (const f of files) {
     const content = readFileSync(resolve(process.cwd(), f), "utf8");
@@ -624,6 +633,226 @@ test("LatexRenderer.testRender bypasses disk and memory cache and detects broken
     // Breaking latexBin must fail testRender even though the code is cached
     host.settings.latexBin = join(cacheDir, "nonexistent-pdflatex");
     await assert.rejects(() => renderer.testRender(code));
+    renderer.destroy();
+  });
+});
+
+// --- 0.5.0 feature & regression tests ---
+
+test("migrateSettings validates darkMode adaptation options", () => {
+  for (const mode of ["auto", "paper", "none"] as const) {
+    const res = migrateSettings({ darkMode: mode });
+    assert.equal(res.settings.darkMode, mode);
+    assert.equal(res.changed, false);
+  }
+  const invalid = migrateSettings({ darkMode: "sepia" });
+  assert.equal(invalid.settings.darkMode, "auto");
+  assert.equal(invalid.changed, true);
+});
+
+test("livePreviewExtension uses atomic replace when collapsed, expands/maps cleanly, and refreshes on recalcEffect", () => {
+  const doc = "Intro\n```latex-vault\n\\draw (0,0) circle (1);\n```\nOutro";
+  const host = createMockHost();
+  const fakePlugin = {
+    settings: host.settings,
+    renderer: new LatexRenderer(host),
+    t: host.t,
+    renderConfigVersion: 0,
+  } as unknown as Parameters<typeof livePreviewExtension>[0];
+
+  const field = livePreviewExtension(fakePlugin);
+  let state = EditorState.create({
+    doc,
+    extensions: [editorLivePreviewField.init(() => true), field],
+  });
+
+  const [block] = findLatexBlocks(state);
+  assert.ok(block);
+
+  // Collapsed: single atomic replace decoration spanning block.from..block.to
+  const collapsedRanges: Array<{ from: number; to: number; widget: LatexPreviewWidget }> = [];
+  state.field(field).deco.between(0, state.doc.length, (from, to, value) => {
+    collapsedRanges.push({
+      from,
+      to,
+      widget: value.spec.widget as LatexPreviewWidget,
+    });
+  });
+  assert.equal(collapsedRanges.length, 1);
+  assert.equal(collapsedRanges[0].from, block.from);
+  assert.equal(collapsedRanges[0].to, block.to);
+  assert.equal(collapsedRanges[0].widget.expanded, false);
+
+  // Expand: switches to point widget at block.to..block.to
+  state = state.update({ effects: expandEffect.of(block.from) }).state;
+  const expandedRanges: Array<{ from: number; to: number; widget: LatexPreviewWidget }> = [];
+  state.field(field).deco.between(0, state.doc.length, (from, to, value) => {
+    expandedRanges.push({
+      from,
+      to,
+      widget: value.spec.widget as LatexPreviewWidget,
+    });
+  });
+  assert.equal(expandedRanges.length, 1);
+  assert.equal(expandedRanges[0].from, block.to);
+  assert.equal(expandedRanges[0].to, block.to);
+  assert.equal(expandedRanges[0].widget.expanded, true);
+
+  // Inserting a newline right before the fence keeps the block expanded via mapPos(..., 1)
+  state = state.update({ changes: { from: block.from, insert: "\n" } }).state;
+  const shiftedBlock = findLatexBlocks(state)[0];
+  assert.equal(shiftedBlock.from, block.from + 1);
+  assert.ok(state.field(field).expanded.has(shiftedBlock.from));
+
+  // Bumping renderConfigVersion + recalcEffect invalidates widget eq()
+  const prevWidget = expandedRanges[0].widget;
+  (fakePlugin as unknown as { renderConfigVersion: number }).renderConfigVersion = 1;
+  state = state.update({ effects: recalcEffect.of(null) }).state;
+  let updatedWidget: LatexPreviewWidget | null = null;
+  state.field(field).deco.between(0, state.doc.length, (_from, _to, value) => {
+    updatedWidget = value.spec.widget as LatexPreviewWidget;
+  });
+  assert.ok(updatedWidget);
+  assert.equal(prevWidget.eq(updatedWidget as LatexPreviewWidget), false);
+
+  // Collapsing removes the block from expanded
+  state = state.update({ effects: collapseEffect.of(shiftedBlock.from) }).state;
+  assert.equal(state.field(field).expanded.size, 0);
+});
+
+test("LatexPreviewWidget debounces expanded edits and cancels pending timer on destroy", async () => {
+  // Minimal DOM stub for running toDOM() under Node
+  const prevDocument = globalThis.document;
+  const createStubEl = (tag: string) => ({
+    tagName: tag.toUpperCase(),
+    className: "",
+    textContent: "",
+    type: "",
+    dataset: {} as Record<string, string>,
+    children: [] as unknown[],
+    appendChild(child: unknown) {
+      this.children.push(child);
+      return child;
+    },
+    replaceChildren(...nodes: unknown[]) {
+      this.children = [...nodes];
+    },
+    addEventListener() {},
+  });
+  (globalThis as unknown as { document: unknown }).document = {
+    createElement: createStubEl,
+  };
+
+  try {
+    let calls = 0;
+    let lastSignal: AbortSignal | undefined;
+    const renderFn = (_code: string, opts?: { signal?: AbortSignal }) => {
+      calls++;
+      lastSignal = opts?.signal;
+      return Promise.resolve("<svg><path d='M0 0'/></svg>");
+    };
+    const fakeView = {} as Parameters<LatexPreviewWidget["toDOM"]>[0];
+
+    // Expanded widget destroyed before debounce fires must NOT start compilation
+    const w1 = new LatexPreviewWidget(
+      "\\draw (0,0);",
+      renderFn,
+      () => null,
+      (k) => k,
+      "en",
+      true,
+      0,
+      60
+    );
+    w1.toDOM(fakeView);
+    await new Promise((r) => setTimeout(r, 20));
+    w1.destroy();
+    await new Promise((r) => setTimeout(r, 70));
+    assert.equal(calls, 0);
+
+    // Expanded widget that survives debounce triggers once with an AbortSignal
+    const w2 = new LatexPreviewWidget(
+      "\\draw (0,0);",
+      renderFn,
+      () => null,
+      (k) => k,
+      "en",
+      true,
+      0,
+      30
+    );
+    w2.toDOM(fakeView);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(calls, 1);
+    assert.ok(lastSignal instanceof AbortSignal);
+    w2.destroy();
+    assert.equal(lastSignal.aborted, true);
+
+    // Collapsed widget renders immediately without debounce delay
+    const w3 = new LatexPreviewWidget(
+      "\\draw (1,1);",
+      renderFn,
+      () => null,
+      (k) => k,
+      "en",
+      false,
+      0,
+      200
+    );
+    w3.toDOM(fakeView);
+    assert.equal(calls, 2);
+    w3.destroy();
+  } finally {
+    if (prevDocument === undefined) {
+      delete (globalThis as unknown as { document?: unknown }).document;
+    } else {
+      (globalThis as unknown as { document: unknown }).document = prevDocument;
+    }
+  }
+});
+
+test("needsLatexRerun and LatexRenderer automatically run a second pass when requested", async () => {
+  assert.equal(needsLatexRerun("Output written on main.pdf (1 page)."), false);
+  assert.equal(
+    needsLatexRerun("Package nicematrix Warning: Rerun to get the layout right."),
+    true
+  );
+  assert.equal(
+    needsLatexRerun("LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right."),
+    true
+  );
+
+  await withTempDir(async (cacheDir) => {
+    const renderer = new LatexRenderer(createMockHost({ engine: "pdf" }), { cacheDir });
+    const singleSvg = await renderer.render("\\draw (0,0) -- (1,1);");
+    assert.ok(singleSvg.includes("data-pass='pass1'"));
+
+    const rerunSvg = await renderer.render("% MOCK_RERUN\n\\draw (0,0) -- (1,1);");
+    assert.ok(rerunSvg.includes("data-pass='pass2'"));
+    renderer.destroy();
+  });
+});
+
+test("extractLatexErrorTail filters package-loading noise and keeps concise TeX error lines", async () => {
+  const noisy = [
+    "This is pdfTeX, Version 3.141592653",
+    "(/usr/share/texlive/texmf-dist/tex/latex/base/article.cls)",
+    "(/usr/share/texlive/texmf-dist/tex/latex/pgf/frontendlayer/tikz.sty)",
+    "! Undefined control sequence.",
+    "l.4 \\notacommand",
+    "Here is how much of TeX's memory you used:",
+  ].join("\n");
+  const tail = extractLatexErrorTail(noisy, 10);
+  assert.ok(tail.includes("! Undefined control sequence."));
+  assert.ok(tail.includes("l.4 \\notacommand"));
+  assert.ok(!tail.includes("article.cls"));
+
+  await withTempDir(async (cacheDir) => {
+    const renderer = new LatexRenderer(createMockHost({ engine: "pdf" }), { cacheDir });
+    await assert.rejects(
+      () => renderer.render("% MOCK_FAIL_ALL\n\\notacommand"),
+      /Undefined control sequence/
+    );
     renderer.destroy();
   });
 });
