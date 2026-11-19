@@ -1,6 +1,6 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type LatexVaultPlugin from "./main";
-import type { Language } from "./i18n";
+import type { Language, TranslationKey } from "./i18n";
 
 export type LatexEngine = "auto" | "pdf" | "dvi";
 export type DarkModeAdaptation = "auto" | "paper" | "none";
@@ -29,17 +29,43 @@ export const DEFAULT_SETTINGS: LatexSettings = {
   shellEscape: false,
 };
 
+const SETTINGS_SAVE_DEBOUNCE_MS = 400;
+
 export class LatexSettingTab extends PluginSettingTab {
   plugin: LatexVaultPlugin;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingRenderBump = false;
 
   constructor(app: App, plugin: LatexVaultPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
 
+  private scheduleSave(bumpRenderConfig: boolean): void {
+    if (bumpRenderConfig) this.pendingRenderBump = true;
+    if (this.saveTimer !== null) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      void this.flushPendingSave();
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushPendingSave(): Promise<void> {
+    if (this.saveTimer === null) return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    const shouldBump = this.pendingRenderBump;
+    this.pendingRenderBump = false;
+    await this.plugin.saveSettings();
+    if (shouldBump) this.plugin.bumpRenderConfig(true);
+  }
+
+  hide(): void {
+    void this.flushPendingSave();
+  }
+
   display(): void {
     const { containerEl } = this;
-    const t = (s: string) => this.plugin.t(s);
+    const t = (s: TranslationKey) => this.plugin.t(s);
     containerEl.empty();
 
     new Setting(containerEl).setName(t("LaTeX rendering")).setHeading();
@@ -138,11 +164,10 @@ export class LatexSettingTab extends PluginSettingTab {
         text
           .setPlaceholder("(auto)")
           .setValue(this.plugin.settings.latexBin)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.latexBin = value.trim();
             this.plugin.renderer.invalidateBinCache();
-            await this.plugin.saveSettings();
-            this.plugin.bumpRenderConfig(true);
+            this.scheduleSave(true);
           })
       );
 
@@ -153,11 +178,10 @@ export class LatexSettingTab extends PluginSettingTab {
         text
           .setPlaceholder("(auto)")
           .setValue(this.plugin.settings.dvisvgmBin)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.dvisvgmBin = value.trim();
             this.plugin.renderer.invalidateBinCache();
-            await this.plugin.saveSettings();
-            this.plugin.bumpRenderConfig(true);
+            this.scheduleSave(true);
           })
       );
 
@@ -170,10 +194,9 @@ export class LatexSettingTab extends PluginSettingTab {
         text
           .setPlaceholder("\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}")
           .setValue(this.plugin.settings.extraPreamble)
-          .onChange(async (value) => {
+          .onChange((value) => {
             this.plugin.settings.extraPreamble = value;
-            await this.plugin.saveSettings();
-            this.plugin.bumpRenderConfig(true);
+            this.scheduleSave(true);
           })
       );
 
@@ -200,6 +223,7 @@ export class LatexSettingTab extends PluginSettingTab {
       .setDesc(t("Runs a fresh uncached test diagram to verify your TeX and dvisvgm binaries."))
       .addButton((btn) =>
         btn.setButtonText(t("Test")).onClick(async () => {
+          await this.flushPendingSave();
           btn.setDisabled(true);
           btn.setButtonText(t("Rendering..."));
           try {

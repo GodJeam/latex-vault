@@ -3,11 +3,12 @@ import { createHash } from "crypto";
 import { accessSync, constants as fsConstants, promises as fsp, statSync } from "fs";
 import { cpus, tmpdir } from "os";
 import { join } from "path";
+import type { TranslationKey } from "./i18n";
 import type { LatexSettings } from "./settings";
 
 export interface RendererHost {
   settings: LatexSettings;
-  t: (text: string) => string;
+  t: (text: TranslationKey) => string;
 }
 
 export interface RenderOptions {

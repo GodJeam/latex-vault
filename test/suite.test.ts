@@ -25,7 +25,7 @@ import {
 import { DEFAULT_SETTINGS, type LatexSettings } from "../src/settings";
 import { migrateSettings } from "../src/main";
 import { findLatexBlocks, livePreviewExtension } from "../src/livePreview";
-import { IT_TRANSLATIONS, translate } from "../src/i18n";
+import { IT_TRANSLATIONS, translate, type TranslationKey } from "../src/i18n";
 
 const MOCK_TEX_BIN = resolve(process.cwd(), "test", "mock-tex.mjs");
 
@@ -38,7 +38,7 @@ function createMockHost(overrides?: Partial<LatexSettings>): RendererHost {
   };
   return {
     settings,
-    t: (text: string) => translate(settings.language, text),
+    t: (text: TranslationKey) => translate(settings.language, text),
   };
 }
 

@@ -1,10 +1,12 @@
 import { RangeSetBuilder, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import type { EditorState } from "@codemirror/state";
-import { editorLivePreviewField, sanitizeHTMLToDom } from "obsidian";
+import { editorLivePreviewField } from "obsidian";
 import type LatexVaultPlugin from "./main";
+import type { TranslationKey } from "./i18n";
 import type { RenderOptions } from "./renderer";
 import { isClosingFence, isLatexOpeningFence, parseOpeningFence } from "./languages";
+import { createLoadingStatus, renderErrorElement, renderSvgElement } from "./ui";
 
 export interface LatexBlock {
   from: number;
@@ -88,7 +90,7 @@ export class LatexPreviewWidget extends WidgetType {
     readonly code: string,
     private renderFn: (code: string, options?: RenderOptions) => Promise<string>,
     private getCachedFn: (code: string) => string | null,
-    private t: (s: string) => string,
+    private t: (s: TranslationKey) => string,
     readonly language: string,
     readonly expanded: boolean,
     readonly configVersion: number,
@@ -173,11 +175,7 @@ export class LatexPreviewWidget extends WidgetType {
     };
 
     const showSvg = (svg: string) => {
-      wrap.replaceChildren();
-      const fig = document.createElement("div");
-      fig.className = "latex-figure";
-      fig.appendChild(sanitizeHTMLToDom(svg));
-      wrap.appendChild(fig);
+      wrap.replaceChildren(renderSvgElement(svg));
       appendToggle();
     };
 
@@ -187,10 +185,7 @@ export class LatexPreviewWidget extends WidgetType {
       return wrap;
     }
 
-    const status = document.createElement("div");
-    status.className = "latex-status latex-loading";
-    status.textContent = this.t("Rendering LaTeX...");
-    wrap.appendChild(status);
+    wrap.appendChild(createLoadingStatus(this.t("Rendering LaTeX...")));
 
     const startRender = () => {
       if (this.destroyed) return;
@@ -209,18 +204,7 @@ export class LatexPreviewWidget extends WidgetType {
           ) {
             return;
           }
-          wrap.replaceChildren();
-          const errBox = document.createElement("div");
-          errBox.className = "latex-error";
-          const title = document.createElement("div");
-          title.className = "latex-error-title";
-          title.textContent = this.t("LaTeX rendering error");
-          errBox.appendChild(title);
-          const pre = document.createElement("pre");
-          pre.className = "latex-error-msg";
-          pre.textContent = err instanceof Error ? err.message : String(err);
-          errBox.appendChild(pre);
-          wrap.appendChild(errBox);
+          wrap.replaceChildren(renderErrorElement(this.t("LaTeX rendering error"), err));
           appendToggle();
         });
     };
@@ -266,7 +250,7 @@ function computeDecorations(
   const render = (code: string, options?: RenderOptions) =>
     plugin.renderer.render(code, options);
   const getCached = (code: string) => plugin.renderer.getCached(code);
-  const t = (s: string) => plugin.t(s);
+  const t = (s: TranslationKey) => plugin.t(s);
   const lang = plugin.settings.language;
   const configVersion = plugin.renderConfigVersion ?? 0;
   try {

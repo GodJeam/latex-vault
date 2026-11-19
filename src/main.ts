@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Plugin, sanitizeHTMLToDom } from "obsidian";
+import { MarkdownView, Notice, Plugin } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 import { LatexRenderer } from "./renderer";
 import { livePreviewExtension, recalcEffect } from "./livePreview";
@@ -8,8 +8,9 @@ import {
   type DarkModeAdaptation,
   type LatexSettings,
 } from "./settings";
-import { translate } from "./i18n";
+import { translate, type TranslationKey } from "./i18n";
 import { LANGUAGE_SELECTOR } from "./languages";
+import { createLoadingStatus, renderErrorElement, renderSvgElement } from "./ui";
 
 const DARK_MODE_CLASSES: Record<DarkModeAdaptation, string> = {
   auto: "latex-vault-dark-auto",
@@ -152,16 +153,14 @@ export default class LatexVaultPlugin extends Plugin {
   }
 
   // Translate a UI string according to the selected language.
-  t(text: string): string {
+  t(text: TranslationKey): string {
     return translate(this.settings?.language ?? "en", text);
   }
 
   private buildContainer(): HTMLElement {
     const container = document.createElement("div");
     container.className = "latex-result";
-    const status = container.createEl("div", { cls: "latex-status" });
-    status.setText(this.t("Rendering LaTeX with local TeX..."));
-    status.addClass("latex-loading");
+    container.appendChild(createLoadingStatus(this.t("Rendering LaTeX with local TeX...")));
     return container;
   }
 
@@ -170,19 +169,10 @@ export default class LatexVaultPlugin extends Plugin {
     try {
       const svg = await this.renderer.render(code);
       status?.remove();
-      const figure = container.createEl("div", { cls: "latex-figure" });
-      figure.appendChild(sanitizeHTMLToDom(svg));
+      container.appendChild(renderSvgElement(svg));
     } catch (e) {
       status?.remove();
-      const errBox = container.createEl("div", { cls: "latex-error" });
-      errBox.createEl("div", {
-        text: this.t("LaTeX rendering error"),
-        cls: "latex-error-title",
-      });
-      errBox.createEl("pre", {
-        text: e instanceof Error ? e.message : String(e),
-        cls: "latex-error-msg",
-      });
+      container.appendChild(renderErrorElement(this.t("LaTeX rendering error"), e));
     }
   }
 
