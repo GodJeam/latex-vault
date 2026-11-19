@@ -110,11 +110,37 @@ The ```latex-vault tag is dedicated to the plugin, so Obsidian's ```latex syntax
 
 In the plugin settings you can configure the engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to verify your TeX configuration.
 
-## Structure
+## Privacy & Data Handling
 
-- `src/`: TypeScript source
-- `build/`: build tooling (esbuild config, tsconfig)
-- `main.js` / `manifest.json` / `styles.css`: built plugin files (copy into the vault)
+LaTeX Vault runs entirely locally inside Obsidian without telemetry, analytics, or network requests; all rendering is performed by your local TeX binaries (`pdflatex`/`latex` and `dvisvgm`).
+
+- **Settings**: Stored in `<vault>/.obsidian/plugins/latex-vault/data.json` and validated on load.
+- **Render cache**: Compiled SVGs are stored in a user-private temporary directory (`$TMPDIR/latex-vault-render-<uid>`, `0700` directory, `0600` files) and expire automatically after 14 days (capped at 256 MB). Intermediate `.tex`, `.aux`, `.log`, `.pdf`, and `.dvi` build files are removed immediately after each compilation.
+- **SVG sanitization**: Produced SVGs are scoped with unique per-diagram ID prefixes and sanitized via Obsidian's `sanitizeHTMLToDom` before being inserted into the DOM.
+- **Shell escape & Windows launchers**: **Enable shell-escape** is off by default; enable it only for trusted vaults. On Windows, `.cmd`/`.bat` launchers are rejected to avoid `cmd.exe` shell execution (use native `.exe` binaries).
+
+## Project Structure
+
+```text
+src/
+├── main.ts        # Plugin entry point, Reading Mode post-processor & settings migration
+├── renderer.ts    # TeX source generation, bounded local compilation & SVG caching
+├── livePreview.ts # CodeMirror 6 Live Preview extension & fence discovery
+├── settings.ts    # Plugin settings tab & TeX configuration test
+├── languages.ts   # Supported fenced block tags & CommonMark fence parser
+└── i18n.ts        # English and Italian translations
+build/
+├── esbuild.config.mjs # Production/dev bundler
+├── run-tests.mjs      # Offline Node test runner
+└── tsconfig.json      # TypeScript configuration
+test/
+├── mock-tex.mjs       # Offline mock TeX/dvisvgm simulator
+└── suite.test.ts      # Unit and integration tests (npm test)
+```
+
+## Contributing
+
+Development happens on the `dev` branch. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a Pull Request.
 
 ## License
 
