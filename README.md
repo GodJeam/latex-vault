@@ -1,6 +1,6 @@
 # LaTeX Vault
 
-An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **local TeX installation** (MiKTeX / TeX Live), producing SVG images: TikZ diagrams, pgfplots, matrices, algorithms, code listings, math — with **any installed package**, including the ones TikZJax cannot load.
+An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **local TeX installation** (MiKTeX / TeX Live), producing SVG images: TikZ diagrams, pgfplots, matrices, algorithms, code listings, and math with **any installed package**, including the ones TikZJax cannot load.
 
 ## Features
 
@@ -104,7 +104,7 @@ Floats (`algorithm`, `figure`, `table`) are forced to the `[H]` placement so the
 
 Any other installed package can be loaded with `\usepackage` in the block or in the **Extra preamble** setting. A full TeX installation (e.g. `texlive-scheme-full`) avoids missing-package errors.
 
-> **minted**: recent TeX Live versions run it in restricted mode. If yours does not, enable **shell-escape** in the settings — only for trusted vaults, since it lets code blocks execute commands.
+> **minted**: recent TeX Live versions run it in restricted mode. If yours does not, enable **shell-escape** in the settings (only for trusted vaults, since it lets code blocks execute commands).
 
 The ```latex-vault tag is dedicated to the plugin, so Obsidian's ```latex syntax highlighting keeps working for code you only want to show. The ```tikz, ```tikzcd and ```pgfplots tags still work for existing notes.
 
@@ -112,10 +112,10 @@ In the plugin settings you can configure the engine, binary paths, an extra prea
 
 ## Structure
 
-- `src/` — TypeScript source
-- `build/` — build tooling (esbuild config, tsconfig)
-- `main.js` / `manifest.json` / `styles.css` — built plugin files (copy into the vault)
+- `src/`: TypeScript source
+- `build/`: build tooling (esbuild config, tsconfig)
+- `main.js` / `manifest.json` / `styles.css`: built plugin files (copy into the vault)
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+GPL-3.0, see [LICENSE](LICENSE).
