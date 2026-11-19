@@ -19,7 +19,7 @@ const DARK_MODE_CLASSES: Record<DarkModeAdaptation, string> = {
 };
 
 export default class LatexVaultPlugin extends Plugin {
-  settings!: LatexSettings;
+  settings: LatexSettings = { ...DEFAULT_SETTINGS };
   renderer!: LatexRenderer;
   renderConfigVersion = 0;
 

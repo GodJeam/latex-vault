@@ -7,9 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to rebuild & attest (e.g. 0.4.0)"
+        description: "Existing release tag to rebuild & attest (e.g. 0.5.0)"
         required: true
-        default: "0.4.0"
 
 permissions:
   contents: write
@@ -31,8 +30,28 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      - name: Verify release tag matches manifest.json
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.RELEASE_TAG;
+            const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+            const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+            if (manifest.version !== tag) {
+              throw new Error(`Tag ${tag} does not match manifest.json version ${manifest.version}`);
+            }
+            if (!(tag in versions)) {
+              throw new Error(`Tag ${tag} is missing from versions.json`);
+            }
+          '
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Run test suite
+        run: npm test
 
       - name: Build production bundle
         run: npm run build
