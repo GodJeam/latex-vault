@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import * as assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EditorState } from "@codemirror/state";
@@ -11,8 +11,12 @@ import {
   buildLatexArgs,
   buildTexSource,
   cleanSvg,
+  ensurePrivateTempDir,
   isBlankSvg,
   resolveConfiguredLatexBin,
+  resolveSpawnCommand,
+  restrictFilePermissions,
+  scopeSvgIds,
   splitPreamble,
   stripLineComment,
   stripTexComments,
@@ -458,6 +462,168 @@ test("LatexRenderer.cleanupCache prunes legacy hash dirs, stale build dirs, and 
 
     const remaining = await readdir(cacheDir);
     assert.deepEqual(remaining, ["fresh.svg"]);
+    renderer.destroy();
+  });
+});
+
+// --- Security & 0.4.2 regression tests ---
+
+test("scopeSvgIds prefixes defined IDs and references without touching data-id or external URLs", () => {
+  const svg =
+    `<svg><defs><path id='g0-65' data-id='g0-65' d='M0 0'/><clipPath id="clip0"><path d='M0 0'/></clipPath></defs>` +
+    `<g id='page1' clip-path='url(#clip0)' style='mask:url("#clip0")'>` +
+    `<use xlink:href='#g0-65'/><use href="#g0-65"/><a href="https://example.com#g0-65"/><use href="#unknown"/>` +
+    `</g></svg>`;
+  const scoped = scopeSvgIds(svg, "lv-12345678-");
+  assert.ok(scoped.includes("id='lv-12345678-g0-65'"));
+  assert.ok(scoped.includes("data-id='g0-65'"));
+  assert.ok(scoped.includes('id="lv-12345678-clip0"'));
+  assert.ok(scoped.includes("id='lv-12345678-page1'"));
+  assert.ok(scoped.includes("xlink:href='#lv-12345678-g0-65'"));
+  assert.ok(scoped.includes('href="#lv-12345678-g0-65"'));
+  assert.ok(scoped.includes("url(#lv-12345678-clip0)"));
+  assert.ok(scoped.includes('url("#lv-12345678-clip0")'));
+  assert.ok(scoped.includes('href="https://example.com#g0-65"'));
+  assert.ok(scoped.includes('href="#unknown"'));
+  // Idempotent when applied a second time with the same prefix
+  assert.equal(scopeSvgIds(scoped, "lv-12345678-"), scoped);
+});
+
+test("LatexRenderer assigns distinct scoped SVG IDs to different diagrams", async () => {
+  await withTempDir(async (cacheDir) => {
+    const renderer = new LatexRenderer(createMockHost(), { cacheDir });
+    const svg1 = await renderer.render("\\draw (0,0) circle (1);");
+    const svg2 = await renderer.render("\\draw (0,0) circle (2);");
+    const id1 = svg1.match(/\sid='([^']+)'/)?.[1];
+    const id2 = svg2.match(/\sid='([^']+)'/)?.[1];
+    assert.ok(id1 && id1.startsWith("lv-"));
+    assert.ok(id2 && id2.startsWith("lv-"));
+    assert.notEqual(id1, id2);
+    renderer.destroy();
+  });
+});
+
+test("ensurePrivateTempDir enforces owner-only permissions and rejects symlinks", async () => {
+  await withTempDir(async (root) => {
+    const privateDir = join(root, "cache");
+    await ensurePrivateTempDir(privateDir);
+    if (process.platform !== "win32") {
+      const st = await stat(privateDir);
+      assert.equal(st.mode & 0o777, 0o700);
+    }
+
+    const filePath = join(privateDir, "sample.svg");
+    await writeFile(filePath, "<svg/>", "utf8");
+    await restrictFilePermissions(filePath);
+    if (process.platform !== "win32") {
+      const fst = await stat(filePath);
+      assert.equal(fst.mode & 0o777, 0o600);
+    }
+
+    if (process.platform !== "win32") {
+      const target = join(root, "real-dir");
+      const link = join(root, "symlink-cache");
+      await mkdir(target, { recursive: true });
+      await symlink(target, link);
+      await assert.rejects(() => ensurePrivateTempDir(link), /Unsafe cache directory/);
+    }
+  });
+});
+
+test("resolveSpawnCommand blocks .cmd/.bat on Windows and wraps JS scripts with node", () => {
+  assert.throws(
+    () => resolveSpawnCommand("C:\\MiKTeX\\pdflatex.cmd", ["main.tex"], "win32"),
+    /cannot be run safely/i
+  );
+  assert.throws(
+    () => resolveSpawnCommand("C:\\MiKTeX\\dvisvgm.bat", ["main.pdf"], "win32"),
+    /cannot be run safely/i
+  );
+  const winJs = resolveSpawnCommand("C:\\repo\\test\\mock-tex.mjs", ["--version"], "win32");
+  assert.equal(winJs.command, process.execPath);
+  assert.deepEqual(winJs.args, ["C:\\repo\\test\\mock-tex.mjs", "--version"]);
+
+  const winExe = resolveSpawnCommand("C:\\MiKTeX\\pdflatex.exe", ["main.tex"], "win32");
+  assert.equal(winExe.command, "C:\\MiKTeX\\pdflatex.exe");
+  assert.deepEqual(winExe.args, ["main.tex"]);
+
+  const linuxBin = resolveSpawnCommand("/usr/bin/pdflatex", ["main.tex"], "linux");
+  assert.equal(linuxBin.command, "/usr/bin/pdflatex");
+});
+
+test("migrateSettings rejects invalid types, unknown keys, and null bytes in binary paths", () => {
+  const { settings, changed } = migrateSettings({
+    language: "de",
+    engine: "xelatex",
+    enabled: "yes",
+    livePreview: 1,
+    shellEscape: "true",
+    latexBin: "/usr/bin/pdflatex\0evil",
+    dvisvgmBin: "  /usr/bin/dvisvgm  ",
+    extraPreamble: 42,
+    unexpectedKey: "drop-me",
+  });
+  assert.equal(changed, true);
+  assert.equal(settings.language, DEFAULT_SETTINGS.language);
+  assert.equal(settings.engine, DEFAULT_SETTINGS.engine);
+  assert.equal(settings.enabled, DEFAULT_SETTINGS.enabled);
+  assert.equal(settings.livePreview, DEFAULT_SETTINGS.livePreview);
+  assert.equal(settings.shellEscape, DEFAULT_SETTINGS.shellEscape);
+  assert.equal(settings.latexBin, "");
+  assert.equal(settings.dvisvgmBin, "/usr/bin/dvisvgm");
+  assert.equal(settings.extraPreamble, "");
+  assert.equal("unexpectedKey" in settings, false);
+
+  const fromArray = migrateSettings(["corrupted"]);
+  assert.equal(fromArray.changed, true);
+  assert.deepEqual(fromArray.settings, DEFAULT_SETTINGS);
+});
+
+test("findLatexBlocks ignores nested fences and supports 4-backtick and tilde fences", () => {
+  const doc = [
+    "````markdown",
+    "```latex-vault",
+    "\\draw (0,0) -- (1,1);",
+    "```",
+    "````",
+    "~~~markdown",
+    "```tikz",
+    "\\draw (0,0) circle (1);",
+    "```",
+    "~~~",
+    "Inline ```latex-vault``` not a fence",
+    "~~~latex-vault",
+    "\\draw (0,0) -- (2,2);",
+    "~~~",
+    "````tikz",
+    "\\draw (0,0) circle (3);",
+    "````",
+  ].join("\n");
+  const state = EditorState.create({ doc });
+  const blocks = findLatexBlocks(state);
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0].code, "\\draw (0,0) -- (2,2);");
+  assert.equal(blocks[1].code, "\\draw (0,0) circle (3);");
+});
+
+test("LatexRenderer.testRender bypasses disk and memory cache and detects broken binaries", async () => {
+  await withTempDir(async (cacheDir) => {
+    const host = createMockHost();
+    const renderer = new LatexRenderer(host, { cacheDir });
+    const code = "\\draw (0,0) -- (1,0);";
+
+    // Populate normal cache first
+    await renderer.render(code);
+    assert.ok(renderer.getCached(code) !== null);
+
+    // testRender succeeds and reports the engine label
+    const res = await renderer.testRender(code);
+    assert.equal(res.engine, "pdflatex + dvisvgm");
+    assert.ok(res.svg.startsWith("<svg "));
+
+    // Breaking latexBin must fail testRender even though the code is cached
+    host.settings.latexBin = join(cacheDir, "nonexistent-pdflatex");
+    await assert.rejects(() => renderer.testRender(code));
     renderer.destroy();
   });
 });
