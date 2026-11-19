@@ -4,22 +4,23 @@ An **Obsidian** plugin that renders LaTeX code blocks in your vault using a **lo
 
 ## Features
 
-- Renders ```latex-vault blocks (plus legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading and Edit mode.
-- Supports **any LaTeX package** (pgfplots, circuitikz, tikz-cd, forest, nicematrix, algorithmicx, listings, ...), unlike TikZJax.
-- Automatic `pdflatex + dvisvgm` / `latex + dvisvgm` fallback, with disk caching.
-- In Edit mode the code stays available behind a closed "Show LaTeX code" toggle.
-- Smart wrapping: bare TikZ commands and pgfplots axes are wrapped in a `tikzpicture`, while self-contained environments (`forest`, `circuitikz`, `quantikz`, `karnaugh-map`, `bytefield`) and non-picture content (matrices, algorithms, code listings, math) are typeset as-is.
-- Optional **shell-escape** (off by default) for packages that run external tools.
+- Renders ```latex-vault blocks (plus legacy ```tikz, ```tikzcd, ```pgfplots) to **SVG using your local TeX** (MiKTeX / TeX Live), in both Reading mode and Live Preview (while respecting Source Mode).
+- Supports **any LaTeX package** (`pgfplots`, `circuitikz`, `tikz-cd`, `forest`, `nicematrix`, `algorithmicx`, `listings`, ...), unlike TikZJax.
+- Automatic `pdflatex + dvisvgm` / `latex + dvisvgm` fallback, automatic second pass for `nicematrix` and cross-references, bounded concurrency, and SVG-only disk caching.
+- **Dark mode adaptation**: choose between automatic color inversion (preserving hues), a light paper card, or unmodified rendering.
+- In Live Preview, collapsed blocks act as atomic units behind a **"Show LaTeX code"** toggle; expanded edits are debounced so typing does not trigger intermediate compilations.
+- Smart wrapping: bare TikZ commands, `scope`, and `pgfplots` axes are wrapped in a `tikzpicture`, while self-contained environments (`forest`, `circuitikz`, `quantikz`, `karnaugh-map`, `bytefield`) and non-picture content (matrices, algorithms, code listings, math) are typeset as-is.
+- Command Palette actions (**Clear LaTeX rendering cache**, **Toggle LaTeX live preview**) and optional **shell-escape** (off by default) for packages that run external tools.
 
 ## Requirements
 
-- Obsidian (desktop).
+- **Obsidian** desktop **1.5.0+** (Windows, macOS, Linux).
 - A local **TeX** installation with `latex`/`pdflatex` and `dvisvgm` on your `PATH` (or configured in the plugin settings):
 
 | Platform | Recommended TeX | Notes |
 |---|---|---|
-| Windows | MiKTeX | set the `latex`/`dvisvgm` binary paths in settings if not on `PATH` |
-| macOS | MacTeX / TeX Live | binaries usually in `/Library/TeX/texbin` |
+| Windows | MiKTeX or TeX Live | MiKTeX vs TeX Live flags are detected automatically; native `.exe` paths are checked if not on `PATH` |
+| macOS | MacTeX / TeX Live | standard paths like `/Library/TeX/texbin` are checked automatically |
 | Linux | TeX Live (`texlive-full`) | binaries usually in `/usr/bin` |
 
 For the build you also need **Node.js**.
@@ -90,7 +91,7 @@ Leading lines with preamble commands (`\usepackage`, `\usetikzlibrary`, `\newcom
 | Detected | Package |
 |---|---|
 | `tikzcd` | `tikz-cd` |
-| `axis` (any pgfplots axis), `\addplot` | `pgfplots` (`compat=1.18`) |
+| `axis`, `groupplot`, `polaraxis`, `ternaryaxis`, `smithchart`, `\addplot` | `pgfplots` (`compat=1.18`) + matching library |
 | `forest` / `circuitikz` / `quantikz` | `forest` / `circuitikz` / `quantikz` |
 | `karnaugh-map` / `bytefield` | `karnaugh-map` / `bytefield` |
 | `pNiceMatrix`, `NiceArray`, ... / `blockarray` | `nicematrix` / `blkarray` |
@@ -98,7 +99,7 @@ Leading lines with preamble commands (`\usepackage`, `\usetikzlibrary`, `\newcom
 | `lstlisting` / `minted` / `tcolorbox` | `listings` / `minted` / `tcolorbox` |
 | `\dv`, `\pdv`, `\bra`, `\ket` | `physics` |
 | `\coloneqq`, `\mathclap`, ... | `mathtools` |
-| `\cancel` / `\SI`, `\num`, ... | `cancel` / `siunitx` |
+| `\cancel` / `\SI`, `\qty`, `\num`, ... | `cancel` / `siunitx` |
 
 Floats (`algorithm`, `figure`, `table`) are forced to the `[H]` placement so they render inside the standalone image; `\begin{algorithm}` loads `algorithm` automatically unless you load `algorithm2e`.
 
@@ -108,7 +109,7 @@ Any other installed package can be loaded with `\usepackage` in the block or in 
 
 The ```latex-vault tag is dedicated to the plugin, so Obsidian's ```latex syntax highlighting keeps working for code you only want to show. The ```tikz, ```tikzcd and ```pgfplots tags still work for existing notes.
 
-In the plugin settings you can configure the engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to verify your TeX configuration.
+In the plugin settings you can configure the dark mode adaptation, rendering engine, binary paths, an extra preamble, shell-escape, and the interface language (English by default, Italian optional). Use the **Test** button to run an uncached check of your TeX setup, or trigger **Clear LaTeX rendering cache** and **Toggle LaTeX live preview** from the Command Palette.
 
 ## Privacy & Data Handling
 
@@ -123,12 +124,13 @@ LaTeX Vault runs entirely locally inside Obsidian without telemetry, analytics, 
 
 ```text
 src/
-├── main.ts        # Plugin entry point, Reading Mode post-processor & settings migration
+├── main.ts        # Plugin entry point, commands, Reading Mode post-processor & settings validation
 ├── renderer.ts    # TeX source generation, bounded local compilation & SVG caching
 ├── livePreview.ts # CodeMirror 6 Live Preview extension & fence discovery
-├── settings.ts    # Plugin settings tab & TeX configuration test
+├── settings.ts    # Plugin settings tab & uncached TeX configuration test
+├── ui.ts          # Shared DOM helpers for SVG figures, loading status & errors
 ├── languages.ts   # Supported fenced block tags & CommonMark fence parser
-└── i18n.ts        # English and Italian translations
+└── i18n.ts        # Type-safe English and Italian translations
 build/
 ├── esbuild.config.mjs # Production/dev bundler
 ├── run-tests.mjs      # Offline Node test runner

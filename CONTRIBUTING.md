@@ -27,5 +27,5 @@ To test inside Obsidian, copy `main.js`, `manifest.json`, and `styles.css` to `<
 ## Conventions
 
 - Follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `test:`, `build:`, `chore:`).
-- Add new user-facing strings to both `en` (inline) and `it` in [`src/i18n.ts`](src/i18n.ts).
-- Add regression tests under `test/` for bug fixes and new renderer/editor behavior.
+- Keep user-facing strings typed and translated in both `en` and `it` inside [`src/i18n.ts`](src/i18n.ts), and share Reading/Edit DOM helpers via [`src/ui.ts`](src/ui.ts).
+- Add regression tests under `test/` for bug fixes and new renderer/editor behavior; CI runs `npm test` and `npm run build` on both Ubuntu and Windows.
